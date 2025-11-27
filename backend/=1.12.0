@@ -1,0 +1,2 @@
+Requirement already satisfied: pydeps in ./venv/lib/python3.10/site-packages (3.0.1)
+Requirement already satisfied: stdlib_list in ./venv/lib/python3.10/site-packages (from pydeps) (0.12.0)
