@@ -188,3 +188,4 @@ site/
 frontend/node_modules
 backend/node_modules
 .claude
+backend/__pycache__
