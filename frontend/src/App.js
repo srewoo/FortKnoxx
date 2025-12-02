@@ -865,6 +865,11 @@ const RepositoryDetail = () => {
       setRepository(repoRes.data);
       setScans(scansRes.data);
       setStats(statsRes.data);
+
+      // Reset scanning state when scan is no longer in progress
+      if (repoRes.data.scan_status !== "scanning") {
+        setScanning(false);
+      }
     } catch (error) {
       console.error("Failed to fetch repository data:", error);
       toast.error(`Failed to fetch repository data: ${getErrorMessage(error)}`);
@@ -878,11 +883,12 @@ const RepositoryDetail = () => {
     try {
       await axios.post(`${API}/scans/${repoId}`);
       toast.success("Scan started successfully!");
+      // Don't set scanning to false here - let it be controlled by scan_status from backend
       setTimeout(fetchRepositoryData, 2000);
     } catch (error) {
       console.error("Failed to start scan:", error);
       toast.error(`Failed to start scan: ${getErrorMessage(error)}`);
-    } finally {
+      // Only set scanning to false if the scan failed to start
       setScanning(false);
     }
   };
@@ -951,7 +957,7 @@ const RepositoryDetail = () => {
               <div className="flex-1">
                 <h3 className="text-lg font-semibold text-blue-700 dark:text-blue-300">Security Scan in Progress</h3>
                 <p className="text-sm text-blue-600 dark:text-blue-400">
-                  Running comprehensive security analysis with 26 professional scanning tools across all code, dependencies, secrets, and infrastructure...
+                  Running comprehensive security analysis with 31 professional scanning tools across all code, dependencies, secrets, and infrastructure...
                 </p>
                 <Progress value={33} className="mt-2" />
               </div>
@@ -1169,7 +1175,8 @@ const ScanDetail = () => {
       "claude-sonnet-4-20250514": "claude-3-7-sonnet-20250219",
       "claude-4-sonnet-20250514": "claude-3-7-sonnet-20250219",
       "gemini-2.0-flash-exp": "gemini-2.0-flash",
-      "gemini-2.5-pro": "gemini-2.0-flash"
+      "gemini-1.5-pro": "gemini-2.0-flash",
+      "gemini-pro": "gemini-2.0-flash"
     };
 
     if (storedModel && modelMigration[storedModel]) {
@@ -1198,7 +1205,7 @@ const ScanDetail = () => {
 
   useEffect(() => {
     applyFilters();
-  }, [vulnerabilities, filterSeverity, filterOwasp, filterScanner]);
+  }, [vulnerabilities, qualityIssues, complianceIssues, filterSeverity, filterOwasp, filterScanner]);
 
   useEffect(() => {
     localStorage.setItem("selectedProvider", selectedProvider);
@@ -1241,6 +1248,13 @@ const ScanDetail = () => {
     }
   };
 
+  // Helper function to normalize scanner names for comparison
+  const normalizeScannerName = (name) => {
+    if (!name) return '';
+    // Remove spaces, hyphens, underscores and convert to lowercase
+    return name.toLowerCase().replace(/[\s\-_]/g, '');
+  };
+
   const applyFilters = () => {
     // Combine all issues from all collections
     let allIssues = [
@@ -1259,12 +1273,28 @@ const ScanDetail = () => {
 
     if (filterScanner.length > 0) {
       allIssues = allIssues.filter(v => {
-        if (!v.detected_by) return false;
-        const detectedBy = v.detected_by.toLowerCase();
-        return filterScanner.some(scanner => {
-          const scannerLower = scanner.toLowerCase();
-          // Check if detected_by contains the scanner name or vice versa
-          return detectedBy.includes(scannerLower) || scannerLower.includes(detectedBy.replace(/\s+/g, ''));
+        // Check both detected_by (single scanner) and detected_by_scanners (array from deduplication)
+        const scannersToCheck = [];
+
+        if (v.detected_by) {
+          scannersToCheck.push(v.detected_by);
+        }
+
+        if (v.detected_by_scanners && Array.isArray(v.detected_by_scanners)) {
+          scannersToCheck.push(...v.detected_by_scanners);
+        }
+
+        if (scannersToCheck.length === 0) return false;
+
+        // Check if any of the selected scanners match any of the issue's scanners
+        return filterScanner.some(selectedScanner => {
+          const normalizedSelected = normalizeScannerName(selectedScanner);
+          return scannersToCheck.some(issueScanner => {
+            const normalizedIssue = normalizeScannerName(issueScanner);
+            return normalizedIssue === normalizedSelected ||
+                   normalizedIssue.includes(normalizedSelected) ||
+                   normalizedSelected.includes(normalizedIssue);
+          });
         });
       });
     }
@@ -1441,7 +1471,7 @@ const ScanDetail = () => {
             <CardDescription>Quality Issues</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-500">{scan?.quality_issues_count || qualityIssues.length}</div>
+            <div className="text-2xl font-bold text-blue-500">{scan?.quality_issues_count ?? qualityIssues.length}</div>
           </CardContent>
         </Card>
       </div>
@@ -1659,7 +1689,7 @@ const ScanDetail = () => {
                             )}
                             {selectedProvider === "gemini" && (
                               <>
-                                <SelectItem value="gemini-2.0-flash">Gemini 2.5 Flash</SelectItem>
+                                <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
                               </>
                             )}
                           </SelectContent>
@@ -1772,15 +1802,20 @@ const SettingsPage = () => {
       setGitIntegrations(integrationsRes.data.integrations || []);
       setConnectedRepos(reposRes.data.repositories || []);
 
-      // Initialize scanner config if not already set
-      const savedConfig = localStorage.getItem("scannerConfig");
-      if (!savedConfig || Object.keys(JSON.parse(savedConfig)).length === 0) {
-        const initialConfig = {};
-        Object.keys(scannersRes.data).forEach(key => {
-          initialConfig[key] = true; // All enabled by default
-        });
-        setScannerConfig(initialConfig);
-      }
+      // Load scanner enabled/disabled state from backend scanner_settings
+      const backendScannerSettings = settingsRes.data.scanner_settings || {};
+
+      // Merge backend settings with scanner list (backend settings take precedence)
+      const initialConfig = {};
+      Object.keys(scannersRes.data).forEach(key => {
+        // Use backend setting if available, otherwise default to true
+        if (backendScannerSettings[key] !== undefined) {
+          initialConfig[key] = backendScannerSettings[key];
+        } else {
+          initialConfig[key] = true; // Default enabled if not set in backend
+        }
+      });
+      setScannerConfig(initialConfig);
     } catch (error) {
       console.error("Failed to fetch settings:", error);
       toast.error("Failed to load settings");
@@ -1865,25 +1900,56 @@ const SettingsPage = () => {
     }
   };
 
-  const toggleScanner = (scannerKey) => {
+  const toggleScanner = async (scannerKey) => {
+    const newValue = !scannerConfig[scannerKey];
+
+    // Optimistically update the UI
     setScannerConfig(prev => ({
       ...prev,
-      [scannerKey]: !prev[scannerKey]
+      [scannerKey]: newValue
     }));
-    toast.success(`Scanner ${scannerConfig[scannerKey] ? 'disabled' : 'enabled'}`);
+
+    try {
+      // Save to backend
+      await axios.put(`${API}/settings/scanners`, {
+        [scannerKey]: newValue
+      });
+      toast.success(`Scanner ${newValue ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      // Revert on error
+      setScannerConfig(prev => ({
+        ...prev,
+        [scannerKey]: !newValue
+      }));
+      toast.error(`Failed to update scanner setting: ${getErrorMessage(error)}`);
+    }
   };
 
-  const toggleAllScanners = (enable) => {
+  const toggleAllScanners = async (enable) => {
     const newConfig = {};
+    const updatePayload = {};
+
     Object.keys(scanners).forEach(key => {
       if (scanners[key].installed) {
         newConfig[key] = enable;
+        updatePayload[key] = enable;
       } else {
         newConfig[key] = scannerConfig[key] || false; // Keep non-installed scanners as-is
       }
     });
+
+    // Optimistically update the UI
     setScannerConfig(newConfig);
-    toast.success(`All installed scanners ${enable ? 'enabled' : 'disabled'}`);
+
+    try {
+      // Save to backend
+      await axios.put(`${API}/settings/scanners`, updatePayload);
+      toast.success(`All installed scanners ${enable ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      // Revert on error - refetch settings
+      fetchSettings();
+      toast.error(`Failed to update scanner settings: ${getErrorMessage(error)}`);
+    }
   };
 
   // Check if all installed scanners are enabled

@@ -265,17 +265,28 @@ def _parse_snyk_result(data: Dict, repo_path: str) -> List[Dict]:
             if isinstance(upgrade, list) and len(upgrade) > 1:
                 description += f"\nUpgrade path: {' -> '.join(str(u) for u in upgrade if u)}"
 
+        # Safely extract CVE and CWE identifiers
+        identifiers = vuln.get("identifiers", {})
+        cve_list = identifiers.get("CVE", [])
+        cwe_list = identifiers.get("CWE", [])
+        cve = cve_list[0] if isinstance(cve_list, list) and len(cve_list) > 0 else ""
+        cwe = cwe_list[0] if isinstance(cwe_list, list) and len(cwe_list) > 0 else ""
+
+        # Safely extract file path from 'from' field
+        from_list = vuln.get("from", [])
+        file_path = os.path.join(repo_path, from_list[0]) if isinstance(from_list, list) and len(from_list) > 0 else ""
+
         issue = {
             "title": f"Vulnerable dependency: {vuln.get('packageName', 'Unknown')}@{vuln.get('version', '')}",
             "description": description,
             "severity": severity,
-            "file_path": os.path.join(repo_path, vuln.get("from", [""])[0]) if vuln.get("from") else "",
+            "file_path": file_path,
             "line_start": 0,
             "line_end": 0,
             "detected_by": "snyk",
             "category": "Dependency",
-            "cve": vuln.get("identifiers", {}).get("CVE", [""])[0] if vuln.get("identifiers") else "",
-            "cwe": vuln.get("identifiers", {}).get("CWE", [""])[0] if vuln.get("identifiers") else "",
+            "cve": cve,
+            "cwe": cwe,
             "owasp_category": "A06",  # Vulnerable and Outdated Components
             "package_name": vuln.get("packageName", ""),
             "package_version": vuln.get("version", ""),

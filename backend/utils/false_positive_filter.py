@@ -10,6 +10,16 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 
+def _normalize_severity(severity_value, default="medium"):
+    """Normalize severity value (handle string, list, or other types)"""
+    if isinstance(severity_value, list):
+        return severity_value[0].lower() if severity_value else default
+    elif isinstance(severity_value, str):
+        return severity_value.lower()
+    else:
+        return default
+
+
 # Scanner reliability scores (0.0 to 1.0)
 SCANNER_RELIABILITY = {
     'gitleaks': 0.98,        # Excellent for secrets
@@ -77,11 +87,21 @@ def filter_false_positives(
     filtered = [
         issue for issue in filtered
         if issue.get('confidence_score', 0.5) >= min_confidence
-        or issue.get('severity', '').lower() in ['critical', 'high']  # Always keep critical/high
+        or _normalize_severity(issue.get('severity', '')) in ['critical', 'high']  # Always keep critical/high
     ]
     logger.info(f"After confidence threshold ({confidence_threshold}): {len(filtered)} issues")
 
     return filtered
+
+
+def _safe_lower(value, default=""):
+    """Safely convert a value to lowercase string"""
+    if isinstance(value, list):
+        return value[0].lower() if value else default
+    elif isinstance(value, str):
+        return value.lower()
+    else:
+        return default
 
 
 def _is_likely_false_positive(issue: Dict) -> bool:
@@ -91,11 +111,11 @@ def _is_likely_false_positive(issue: Dict) -> bool:
     IMPORTANT: This function is CONSERVATIVE - when in doubt, we do NOT filter.
     Real vulnerabilities should never be hidden from users.
     """
-    file_path = issue.get('file_path', '').lower()
-    category = issue.get('category', '').lower()
-    severity = issue.get('severity', '').lower()
-    detected_by = issue.get('detected_by', '').lower()
-    title = issue.get('title', '').lower()
+    file_path = _safe_lower(issue.get('file_path', ''))
+    category = _safe_lower(issue.get('category', ''))
+    severity = _normalize_severity(issue.get('severity', ''))
+    detected_by = _safe_lower(issue.get('detected_by', ''))
+    title = _safe_lower(issue.get('title', ''))
 
     # RULE 0: NEVER filter critical or high severity issues - they require human review
     if severity in ['critical', 'high']:
@@ -159,7 +179,9 @@ def _deduplicate_and_score(issues: List[Dict]) -> List[Dict]:
         group = issue_groups[fingerprint]
         group['issues'].append(issue)
         group['scanners'].add(issue.get('detected_by', 'unknown'))
-        group['severities'][issue.get('severity', 'medium')] += 1
+        # Normalize severity before using as dictionary key
+        normalized_severity = _normalize_severity(issue.get('severity', 'medium'))
+        group['severities'][normalized_severity] += 1
 
     # Build deduplicated list with confidence scores
     deduplicated = []
@@ -208,6 +230,16 @@ def _deduplicate_and_score(issues: List[Dict]) -> List[Dict]:
     return deduplicated
 
 
+def _normalize_string(value, default=""):
+    """Normalize a string value (handle string, list, or other types)"""
+    if isinstance(value, list):
+        return value[0].lower().strip() if value else default
+    elif isinstance(value, str):
+        return value.lower().strip()
+    else:
+        return default
+
+
 def _create_fingerprint(issue: Dict) -> str:
     """
     Create a fingerprint for issue deduplication
@@ -216,13 +248,13 @@ def _create_fingerprint(issue: Dict) -> str:
     file_path = issue.get('file_path', 'unknown')
     line_start = issue.get('line_start', 0)
 
-    # Normalize category/CWE
+    # Normalize category/CWE (handle potential list values)
     category = issue.get('cwe', '') or issue.get('category', '') or issue.get('owasp_category', '')
-    category = category.lower().strip()
+    category = _normalize_string(category)
 
     # Create fingerprint: file:line:category
-    # Use line range (±2 lines) to catch similar issues
-    line_bucket = (line_start // 3) * 3  # Group lines in buckets of 3
+    # Use line range (±5 lines) to catch similar issues without being too aggressive
+    line_bucket = (line_start // 5) * 5  # Group lines in buckets of 5
 
     fingerprint = f"{file_path}:{line_bucket}:{category}"
     return fingerprint

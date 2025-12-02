@@ -59,7 +59,7 @@ class ESLintSecurityScanner:
 
         try:
             # Create temporary ESLint config
-            config_file = await self._create_config(repo_path)
+            config_file = self._create_config(repo_path)
 
             cmd = [
                 self.eslint_path,
@@ -116,7 +116,7 @@ class ESLintSecurityScanner:
 
         return js_files
 
-    async def _create_config(self, repo_path: str) -> str:
+    def _create_config(self, repo_path: str) -> str:
         """Create ESLint configuration with security plugins"""
         config = {
             "env": {

@@ -9,7 +9,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
@@ -57,6 +57,12 @@ from analysis.context_analyzer import ContextAnalyzer
 
 # Import false positive filter
 from utils.false_positive_filter import filter_false_positives, get_filter_stats
+
+# Import scan limits for large repository handling
+from utils.scan_limits import (
+    ScanLimits, RepoAnalyzer, RepoStats, LLMBatcher, ScanProgress,
+    get_scan_limits, run_with_timeout
+)
 
 # Import LLM orchestrator
 from llm.orchestrator import LLMOrchestrator
@@ -241,6 +247,30 @@ class Vulnerability(BaseModel):
     fix_recommendation: Optional[str] = None
     detected_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator('cwe', mode='before')
+    @classmethod
+    def normalize_cwe(cls, v):
+        """Convert CWE list to string if needed"""
+        if isinstance(v, list):
+            return v[0] if v else None
+        return v
+
+    @field_validator('severity', mode='before')
+    @classmethod
+    def normalize_severity(cls, v):
+        """Convert severity list to string if needed"""
+        if isinstance(v, list):
+            return v[0] if v else "medium"
+        return v
+
+    @field_validator('file_path', mode='before')
+    @classmethod
+    def normalize_file_path(cls, v):
+        """Convert file_path list to string if needed"""
+        if isinstance(v, list):
+            return v[0] if v else ""
+        return v
 
 class Scan(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -572,12 +602,60 @@ def calculate_compliance_score(compliance_issues: List[Dict]) -> int:
 
 async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
     """Process all scan results and store vulnerabilities"""
+
+    def normalize_severity(severity_value, default="medium"):
+        """Normalize severity value (handle string, list, or other types)"""
+        if isinstance(severity_value, list):
+            return severity_value[0].lower() if severity_value else default
+        elif isinstance(severity_value, str):
+            return severity_value.lower()
+        else:
+            return default
+
     try:
         # Update scan status
         await db.scans.update_one(
             {"id": scan_id},
             {"$set": {"status": "scanning"}}
         )
+
+        # Initialize scan limits and progress tracking
+        scan_limits = get_scan_limits()
+        repo_analyzer = RepoAnalyzer(scan_limits)
+        llm_batcher = LLMBatcher(scan_limits)
+
+        # Analyze repository for optimal scan strategy
+        logger.info("Analyzing repository size and structure...")
+        repo_stats = repo_analyzer.analyze_repo(repo_path)
+        logger.info(f"Repository analysis: {repo_stats.total_files} files, {repo_stats.total_size_mb:.1f}MB, "
+                   f"{repo_stats.source_files} source files, languages: {repo_stats.languages_detected}")
+
+        # Log warnings for large repos
+        for warning in repo_stats.warnings:
+            logger.warning(warning)
+
+        # Store repo stats in scan metadata
+        await db.scans.update_one(
+            {"id": scan_id},
+            {"$set": {
+                "repo_stats": {
+                    "total_files": repo_stats.total_files,
+                    "total_size_mb": round(repo_stats.total_size_mb, 2),
+                    "source_files": repo_stats.source_files,
+                    "test_files": repo_stats.test_files,
+                    "security_relevant_files": repo_stats.security_relevant_files,
+                    "languages": repo_stats.languages_detected,
+                    "is_large_repo": repo_stats.is_large_repo,
+                    "estimated_scan_time_minutes": repo_stats.estimated_scan_time_minutes
+                }
+            }}
+        )
+
+        # Get priority files for AI analysis (limited for large repos)
+        priority_files = []
+        if repo_stats.is_large_repo:
+            priority_files = repo_analyzer.get_priority_files(repo_path)
+            logger.info(f"Large repo: AI analysis limited to {len(priority_files)} priority files")
 
         # Load scanner settings
         logger.info("Loading scanner settings...")
@@ -812,6 +890,8 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
 
         # ===== AI-POWERED SECURITY ENGINES =====
         logger.info("Starting AI-powered security analysis...")
+        if repo_stats.is_large_repo:
+            logger.info(f"Large repo mode: AI scanners will use {scan_limits.ai_scanner_timeout}s timeout")
 
         # 1. Zero-Day Detection (ML Anomaly Detector)
         zero_day_results = []
@@ -819,8 +899,14 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             if ML_DETECTOR_AVAILABLE and MLAnomalyDetector is not None:
                 try:
                     ml_detector = MLAnomalyDetector()
-                    zero_day_anomalies = await ml_detector.analyze_repository(repo_path)
-                    zero_day_results = zero_day_anomalies
+                    # Use timeout for AI scanner
+                    zero_day_anomalies = await run_with_timeout(
+                        ml_detector.analyze_repository(repo_path),
+                        timeout_seconds=scan_limits.ai_scanner_timeout,
+                        name="Zero-Day Detector",
+                        default_return=[]
+                    )
+                    zero_day_results = zero_day_anomalies or []
                     logger.info(f"Zero-Day Detector completed: {len(zero_day_results)} anomalies found")
                 except Exception as e:
                     logger.error(f"Zero-Day Detector failed: {str(e)}")
@@ -835,11 +921,23 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             if FLOW_ANALYZER_AVAILABLE and FlowAnalyzer is not None:
                 try:
                     flow_analyzer = FlowAnalyzer()
-                    flow_graph = await flow_analyzer.analyze_repository(repo_path)
+                    # Use timeout for flow analysis
+                    flow_graph = await run_with_timeout(
+                        flow_analyzer.analyze_repository(repo_path),
+                        timeout_seconds=scan_limits.ai_scanner_timeout,
+                        name="Flow Analyzer",
+                        default_return=None
+                    )
 
-                    logic_engine = LogicRuleEngine()
-                    logic_violations = await logic_engine.analyze_flow_graph(flow_graph, repo_path)
-                    business_logic_results = logic_violations
+                    if flow_graph:
+                        logic_engine = LogicRuleEngine()
+                        logic_violations = await run_with_timeout(
+                            logic_engine.analyze_flow_graph(flow_graph, repo_path),
+                            timeout_seconds=scan_limits.ai_scanner_timeout,
+                            name="Logic Rule Engine",
+                            default_return=[]
+                        )
+                        business_logic_results = logic_violations or []
                     logger.info(f"Business Logic Scanner completed: {len(business_logic_results)} violations found")
                 except Exception as e:
                     logger.error(f"Business Logic Scanner failed: {str(e)}")
@@ -858,11 +956,16 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 # Only run LLM security scanner if API keys are configured
                 if llm_api_keys.get("openai_api_key") or llm_api_keys.get("anthropic_api_key") or llm_api_keys.get("gemini_api_key"):
                     llm_discovery = LLMSurfaceDiscovery()
-                    llm_endpoints = await llm_discovery.discover_llm_usage(repo_path)
+                    llm_endpoints = await run_with_timeout(
+                        llm_discovery.discover_llm_usage(repo_path),
+                        timeout_seconds=scan_limits.ai_scanner_timeout,
+                        name="LLM Discovery",
+                        default_return=[]
+                    )
 
                     if llm_endpoints:
                         payload_gen = AdversarialPayloadGenerator()
-                        payloads = await payload_gen.generate_payloads()
+                        payloads = await payload_gen.generate_all_payloads()
 
                         # Convert API keys to format expected by tester
                         api_keys_dict = {}
@@ -874,8 +977,15 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                             api_keys_dict["gemini"] = llm_api_keys["gemini_api_key"]
 
                         tester = AdversarialTester(api_keys=api_keys_dict)
-                        llm_vulns = await tester.test_endpoints(llm_endpoints, payloads, sample_size=10)
-                        llm_security_results = llm_vulns
+                        # Limit sample size for large repos
+                        sample_size = 5 if repo_stats.is_large_repo else 10
+                        llm_vulns = await run_with_timeout(
+                            tester.test_endpoints(llm_endpoints, payloads, sample_size=sample_size),
+                            timeout_seconds=scan_limits.ai_scanner_timeout,
+                            name="LLM Adversarial Testing",
+                            default_return=[]
+                        )
+                        llm_security_results = llm_vulns or []
                         logger.info(f"LLM Security Scanner completed: {len(llm_security_results)} vulnerabilities found")
                     else:
                         logger.info("LLM Security Scanner: No LLM endpoints detected")
@@ -891,8 +1001,13 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         if scanner_settings.enable_auth_scanner:
             try:
                 auth_analyzer = AuthStaticAnalyzer()
-                auth_vulns = await auth_analyzer.analyze_repository(repo_path)
-                auth_scanner_results = auth_vulns
+                auth_vulns = await run_with_timeout(
+                    auth_analyzer.analyze_repository(repo_path),
+                    timeout_seconds=scan_limits.ai_scanner_timeout,
+                    name="Auth Scanner",
+                    default_return=[]
+                )
+                auth_scanner_results = auth_vulns or []
                 logger.info(f"Auth Scanner completed: {len(auth_scanner_results)} vulnerabilities found")
             except Exception as e:
                 logger.error(f"Auth Scanner failed: {str(e)}")
@@ -906,7 +1021,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         
         # Process Semgrep results
         for finding in semgrep_results:
-            severity = finding.get("extra", {}).get("severity", "medium").lower()
+            severity = normalize_severity(finding.get("extra", {}).get("severity", "medium"))
             category = finding.get("check_id", "unknown")
             
             vuln = Vulnerability(
@@ -947,7 +1062,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         
         # Process Trivy results
         for dep in trivy_results:
-            severity = dep.get("Severity", "MEDIUM").lower()
+            severity = normalize_severity(dep.get("Severity", "MEDIUM"))
             vuln = Vulnerability(
                 repo_id=repo_id,
                 scan_id=scan_id,
@@ -969,7 +1084,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         
         # Process Checkov results
         for check in checkov_results:
-            severity = check.get("check_result", {}).get("result", {}).get("severity", "MEDIUM").lower()
+            severity = normalize_severity(check.get("check_result", {}).get("result", {}).get("severity", "MEDIUM"))
             vuln = Vulnerability(
                 repo_id=repo_id,
                 scan_id=scan_id,
@@ -997,7 +1112,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "medium")
+            severity = normalize_severity(finding.get("severity", "medium"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process TruffleHog results (secret detection)
@@ -1010,7 +1125,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "critical")
+            severity = normalize_severity(finding.get("severity", "critical"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process Grype results (dependency vulnerabilities)
@@ -1023,7 +1138,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "medium")
+            severity = normalize_severity(finding.get("severity", "medium"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process ESLint results (JavaScript/TypeScript security)
@@ -1036,7 +1151,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "medium")
+            severity = normalize_severity(finding.get("severity", "medium"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process quality scanner results (including new enhanced scanners)
@@ -1062,7 +1177,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "medium")
+            severity = normalize_severity(finding.get("severity", "medium"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process enhanced scanner results (High Value Additions)
@@ -1079,7 +1194,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "medium")
+            severity = normalize_severity(finding.get("severity", "medium"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process compliance scanner results (pip-audit, npm-audit are security vulns)
@@ -1092,7 +1207,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "created_at": datetime.now(timezone.utc)
             }
             vulnerabilities.append(vuln_dict)
-            severity = finding.get("severity", "medium")
+            severity = normalize_severity(finding.get("severity", "medium"))
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
         # Process Syft license compliance results
@@ -1208,24 +1323,39 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             logger.info("Starting context-aware analysis...")
             context_analyzer = ContextAnalyzer()
 
-            # Analyze repository structure
-            repo_structure = await context_analyzer.analyze_repository_structure(repo_path)
-            logger.info(f"Repository structure analyzed: {repo_structure.get('total_files', 0)} files")
+            try:
+                # Analyze repository structure
+                repo_structure = await context_analyzer.analyze_repository_structure(repo_path)
+                logger.info(f"Repository structure analyzed: {repo_structure.get('total_files', 0)} files")
 
-            # Enrich and prioritize vulnerabilities
-            enriched_vulns = await context_analyzer.prioritize_vulnerabilities(
-                vulnerabilities,
-                repo_path
-            )
+                # Enrich and prioritize vulnerabilities
+                enriched_vulns = await context_analyzer.prioritize_vulnerabilities(
+                    vulnerabilities,
+                    repo_path
+                )
 
-            # Replace vulnerabilities with enriched versions
-            vulnerabilities = enriched_vulns
+                # Replace vulnerabilities with enriched versions only if we got valid results
+                if enriched_vulns is not None and len(enriched_vulns) > 0:
+                    vulnerabilities = enriched_vulns
+                else:
+                    logger.warning("Context analyzer returned empty results, using original vulnerabilities")
+            except Exception as e:
+                logger.error(f"Context analysis failed: {str(e)}, using original vulnerabilities")
+                # Continue with original vulnerabilities
 
             # Recalculate severity counts based on enriched data
             severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
             for vuln in vulnerabilities:
                 # Ensure every vulnerability has a severity
-                severity = vuln.get("severity", "medium").lower()
+                severity_value = vuln.get("severity", "medium")
+                # Handle case where severity might be a list
+                if isinstance(severity_value, list):
+                    severity = severity_value[0].lower() if severity_value else "medium"
+                elif isinstance(severity_value, str):
+                    severity = severity_value.lower()
+                else:
+                    severity = "medium"
+
                 if severity not in severity_counts:
                     severity = "medium"  # Default to medium if invalid
                 severity_counts[severity] = severity_counts.get(severity, 0) + 1
@@ -1872,6 +2002,56 @@ async def generate_report(request: ReportRequest):
     except Exception as e:
         logger.error(f"Error generating report: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# SCAN LIMITS ENDPOINT
+# ============================================
+
+@api_router.get("/scan-limits")
+async def get_current_scan_limits():
+    """
+    Get current scan limits configuration.
+    These limits help handle large repositories efficiently.
+
+    Configure via environment variables:
+    - SCAN_MAX_FILES_AI: Max files for AI analysis (default: 500)
+    - SCAN_MAX_FILE_SIZE_KB: Max file size in KB (default: 500)
+    - SCAN_MAX_REPO_SIZE_MB: Max repo size warning threshold (default: 500)
+    - SCAN_SCANNER_TIMEOUT: Per-scanner timeout in seconds (default: 300)
+    - SCAN_AI_SCANNER_TIMEOUT: AI scanner timeout in seconds (default: 600)
+    - SCAN_CLONE_TIMEOUT: Git clone timeout in seconds (default: 600)
+    - SCAN_TOTAL_TIMEOUT: Total scan timeout in seconds (default: 3600)
+    - SCAN_MAX_VULNS_AI: Max vulnerabilities for AI analysis (default: 100)
+    - SCAN_LLM_BATCH_SIZE: LLM processing batch size (default: 10)
+    - SCAN_LLM_REQUEST_TIMEOUT: Per-LLM request timeout (default: 60)
+    """
+    limits = get_scan_limits()
+    return {
+        "file_limits": {
+            "max_files_for_ai_scan": limits.max_files_for_ai_scan,
+            "max_file_size_kb": limits.max_file_size_kb,
+            "max_total_repo_size_mb": limits.max_total_repo_size_mb
+        },
+        "timeout_limits": {
+            "scanner_timeout_seconds": limits.scanner_timeout,
+            "ai_scanner_timeout_seconds": limits.ai_scanner_timeout,
+            "clone_timeout_seconds": limits.clone_timeout,
+            "total_scan_timeout_seconds": limits.total_scan_timeout
+        },
+        "llm_limits": {
+            "max_vulnerabilities_for_ai_analysis": limits.max_vulnerabilities_for_ai_analysis,
+            "batch_size": limits.llm_batch_size,
+            "request_timeout_seconds": limits.llm_request_timeout,
+            "max_code_snippet_chars": limits.max_code_snippet_chars,
+            "max_description_chars": limits.max_description_chars
+        },
+        "priority_settings": {
+            "prioritize_security_files": limits.prioritize_security_files,
+            "skip_test_files_for_ai": limits.skip_test_files_for_ai,
+            "skip_vendor_dirs": limits.skip_vendor_dirs
+        }
+    }
 
 
 # ============================================

@@ -111,8 +111,12 @@ def _parse_spotbugs_xml(xml_file: str, repo_path: str) -> List[Dict]:
                 source_path = source_line.get("sourcepath", "")
                 if source_path:
                     file_path = _find_source_file(repo_path, source_path)
-                line_start = int(source_line.get("start", "0"))
-                line_end = int(source_line.get("end", line_start))
+                try:
+                    line_start = int(source_line.get("start", "0"))
+                    line_end = int(source_line.get("end", str(line_start)))
+                except (ValueError, TypeError):
+                    line_start = 0
+                    line_end = 0
 
             # Get long description
             long_message = bug.find("LongMessage")

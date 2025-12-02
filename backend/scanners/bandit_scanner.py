@@ -130,7 +130,7 @@ class BanditScanner:
                 'description': f"{result.get('issue_text', '')}\\n\\n{result.get('more_info', '')}",
                 'code_snippet': result.get('code', ''),
                 'cwe': self._get_cwe(result.get('test_id', '')),
-                'confidence': result.get('issue_confidence', 'MEDIUM'),
+                'confidence': result.get('issue_confidence', 'MEDIUM').lower(),
                 'detected_by': 'Bandit'
             }
             vulnerabilities.append(vuln)

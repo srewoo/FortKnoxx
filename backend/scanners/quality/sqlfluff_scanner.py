@@ -101,19 +101,28 @@ async def scan(repo_path: str) -> List[Dict]:
 
 
 def map_severity(rule_code: str) -> str:
-    """Map SQLFluff rule codes to severity levels"""
-    # Security-critical rules
-    if rule_code.startswith("L0"):  # Layout issues
+    """Map SQLFluff rule codes to severity levels
+
+    SQLFluff is primarily a code quality/style linter, not a security scanner.
+    Most issues are style/quality related and should be low-medium severity.
+    """
+    # L0: Layout issues - pure formatting
+    if rule_code.startswith("L0"):
         return "low"
-    elif rule_code.startswith("L1"):  # Structure issues
-        return "medium"
-    elif rule_code.startswith("L2"):  # Capitalization
+    # L1: Structure issues - code organization
+    elif rule_code.startswith("L1"):
         return "low"
-    elif rule_code.startswith("L3"):  # Ambiguous issues (potential security)
-        return "high"
-    elif rule_code.startswith("L4"):  # Column references
+    # L2: Capitalization - style preference
+    elif rule_code.startswith("L2"):
+        return "low"
+    # L3: Ambiguous/unclear patterns - readability issues, not security
+    elif rule_code.startswith("L3"):
         return "medium"
-    elif rule_code.startswith("L5"):  # Aliasing
+    # L4: Column references - query clarity
+    elif rule_code.startswith("L4"):
+        return "low"
+    # L5: Aliasing - naming conventions
+    elif rule_code.startswith("L5"):
         return "low"
     else:
-        return "medium"
+        return "low"  # Default to low for code quality issues

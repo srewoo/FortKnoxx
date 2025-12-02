@@ -209,12 +209,13 @@ class GrypeScanner:
 
     def _extract_cwe(self, vuln_data: Dict) -> str:
         """Extract CWE from vulnerability data"""
+        import re
         # Look for CWE in references or description
         refs = vuln_data.get('references', [])
         for ref in refs:
-            if 'CWE' in ref:
+            # Ensure ref is a string before checking
+            if isinstance(ref, str) and 'CWE' in ref:
                 # Extract CWE number
-                import re
                 match = re.search(r'CWE-(\d+)', ref)
                 if match:
                     return f"CWE-{match.group(1)}"
