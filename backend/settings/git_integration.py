@@ -522,26 +522,40 @@ class GitIntegrationService:
         self,
         token: str,
         page: int = 1,
-        per_page: int = 30
+        per_page: int = 100,
+        fetch_all: bool = True
     ) -> List[Dict[str, Any]]:
-        """List GitHub repositories"""
+        """List GitHub repositories - fetches all pages by default"""
         repos = []
-        async with httpx.AsyncClient() as client:
-            url = f"{self.GITHUB_API_URL}/user/repos"
+        current_page = page
+        max_pages = 50  # Safety limit to prevent infinite loops
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json"
             }
-            params = {
-                "page": page,
-                "per_page": per_page,
-                "sort": "updated"
-            }
 
-            response = await client.get(url, headers=headers, params=params)
+            while current_page <= max_pages:
+                url = f"{self.GITHUB_API_URL}/user/repos"
+                params = {
+                    "page": current_page,
+                    "per_page": per_page,
+                    "sort": "updated",
+                    "affiliation": "owner,collaborator,organization_member"
+                }
 
-            if response.status_code == 200:
-                for repo in response.json():
+                response = await client.get(url, headers=headers, params=params)
+
+                if response.status_code != 200:
+                    break
+
+                page_repos = response.json()
+
+                if not page_repos:
+                    break
+
+                for repo in page_repos:
                     repos.append({
                         "id": repo["id"],
                         "name": repo["name"],
@@ -555,6 +569,12 @@ class GitIntegrationService:
                         "updated_at": repo["updated_at"]
                     })
 
+                # Check if we should fetch more pages
+                if not fetch_all or len(page_repos) < per_page:
+                    break
+
+                current_page += 1
+
         return repos
 
     async def _gitlab_list_repos(
@@ -562,24 +582,37 @@ class GitIntegrationService:
         token: str,
         base_url: Optional[str],
         page: int = 1,
-        per_page: int = 30
+        per_page: int = 100,
+        fetch_all: bool = True
     ) -> List[Dict[str, Any]]:
-        """List GitLab projects"""
+        """List GitLab projects - fetches all pages by default"""
         repos = []
-        async with httpx.AsyncClient() as client:
-            url = f"{base_url or self.GITLAB_API_URL}/projects"
+        current_page = page
+        max_pages = 50  # Safety limit to prevent infinite loops
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {"PRIVATE-TOKEN": token}
-            params = {
-                "page": page,
-                "per_page": per_page,
-                "membership": True,
-                "order_by": "updated_at"
-            }
 
-            response = await client.get(url, headers=headers, params=params)
+            while current_page <= max_pages:
+                url = f"{base_url or self.GITLAB_API_URL}/projects"
+                params = {
+                    "page": current_page,
+                    "per_page": per_page,
+                    "membership": True,
+                    "order_by": "updated_at"
+                }
 
-            if response.status_code == 200:
-                for project in response.json():
+                response = await client.get(url, headers=headers, params=params)
+
+                if response.status_code != 200:
+                    break
+
+                page_repos = response.json()
+
+                if not page_repos:
+                    break
+
+                for project in page_repos:
                     repos.append({
                         "id": project["id"],
                         "name": project["name"],
@@ -592,6 +625,12 @@ class GitIntegrationService:
                         "language": None,  # GitLab doesn't return this in list
                         "updated_at": project["last_activity_at"]
                     })
+
+                # Check if we should fetch more pages
+                if not fetch_all or len(page_repos) < per_page:
+                    break
+
+                current_page += 1
 
         return repos
 

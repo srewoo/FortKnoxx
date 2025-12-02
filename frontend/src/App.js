@@ -1786,6 +1786,7 @@ const SettingsPage = () => {
   const [connectedRepos, setConnectedRepos] = useState([]);
   const [remoteRepos, setRemoteRepos] = useState([]);
   const [loadingRepos, setLoadingRepos] = useState(false);
+  const [repoSearchQuery, setRepoSearchQuery] = useState("");
 
   useEffect(() => {
     fetchSettings();
@@ -1887,12 +1888,13 @@ const SettingsPage = () => {
     }
   };
 
-  const addRepository = async (provider, repoUrl) => {
+  const addRepository = async (provider, repoUrl, isPrivate = false) => {
     try {
       await axios.post(`${API}/repositories`, {
         provider,
         repo_url: repoUrl,
-        auto_scan: false
+        auto_scan: false,
+        is_public: !isPrivate
       });
       toast.success("Repository added!");
       fetchSettings();
@@ -2524,13 +2526,29 @@ const SettingsPage = () => {
               <Separator />
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="font-semibold text-sm text-muted-foreground">Available Repositories</div>
-                  <Button variant="ghost" size="sm" onClick={() => setRemoteRepos([])}>
+                  <div className="font-semibold text-sm text-muted-foreground">Available Repositories ({remoteRepos.length})</div>
+                  <Button variant="ghost" size="sm" onClick={() => { setRemoteRepos([]); setRepoSearchQuery(""); }}>
                     <XCircle className="h-4 w-4 mr-1" /> Close
                   </Button>
                 </div>
+                {/* Search Input */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search repositories..."
+                    value={repoSearchQuery}
+                    onChange={(e) => setRepoSearchQuery(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
                 <div className="max-h-64 overflow-y-auto space-y-2">
-                  {remoteRepos.map((repo, idx) => (
+                  {remoteRepos
+                    .filter(repo =>
+                      repoSearchQuery === "" ||
+                      repo.full_name.toLowerCase().includes(repoSearchQuery.toLowerCase()) ||
+                      (repo.language && repo.language.toLowerCase().includes(repoSearchQuery.toLowerCase()))
+                    )
+                    .map((repo, idx) => (
                     <div key={idx} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50">
                       <div>
                         <div className="font-medium">{repo.full_name}</div>
@@ -2542,7 +2560,8 @@ const SettingsPage = () => {
                         size="sm"
                         onClick={() => addRepository(
                           gitIntegrations[0]?.provider || "github",
-                          `https://github.com/${repo.full_name}`
+                          repo.clone_url || `https://github.com/${repo.full_name}`,
+                          repo.private
                         )}
                         disabled={connectedRepos.some(r => r.full_name === repo.full_name)}
                       >

@@ -2449,8 +2449,17 @@ async def list_remote_repositories(provider: str, page: int = 1, per_page: int =
 async def add_repository(request: AddRepositoryRequest):
     """Add a repository for scanning (supports both public repos and private repos with tokens)"""
     try:
-        # If marked as public or no token provided, use public repository method
-        if request.is_public or not request.access_token:
+        # If marked as public, use public repository method (no auth needed)
+        if request.is_public:
+            result = await git_integration_service.add_public_repository(
+                provider=request.provider,
+                repo_url=request.repo_url,
+                auto_scan=request.auto_scan,
+                branch=request.branch,
+                access_token=request.access_token
+            )
+        elif request.access_token:
+            # Token provided directly - use it
             result = await git_integration_service.add_public_repository(
                 provider=request.provider,
                 repo_url=request.repo_url,
@@ -2459,7 +2468,7 @@ async def add_repository(request: AddRepositoryRequest):
                 access_token=request.access_token
             )
         else:
-            # Use Git Integration method (requires integration to be set up)
+            # Private repo without token - use Git Integration's stored token
             result = await git_integration_service.add_repository(
                 provider=request.provider,
                 repo_url=request.repo_url,
