@@ -1,0 +1,13 @@
+{
+  "num_samples": 500,
+  "vuln_types": [
+    "sql_injection",
+    "command_injection",
+    "path_traversal",
+    "xss",
+    "unsafe_deserialization",
+    "weak_crypto",
+    "hardcoded_secrets"
+  ],
+  "synthetic": true
+}

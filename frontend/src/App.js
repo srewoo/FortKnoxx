@@ -15,7 +15,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
-import { Shield, Search, FileCode, Activity, AlertTriangle, CheckCircle, XCircle, Clock, TrendingUp, Database, GitBranch, Sparkles, Settings, Trash2, Key, Download, FileJson, FileText } from "lucide-react";
+import { Shield, Search, FileCode, Activity, AlertTriangle, CheckCircle, XCircle, Clock, TrendingUp, Database, GitBranch, Sparkles, Settings, Trash2, Key, Download, FileJson, FileText, Github, Link2, Plus, ExternalLink, RefreshCw, LayoutGrid, List, Lock, HelpCircle } from "lucide-react";
 
 // OWASP Top 10 Categories mapping
 const OWASP_CATEGORIES = {
@@ -36,10 +36,40 @@ const getOwaspCategoryName = (code) => {
   return OWASP_CATEGORIES[code] ? `${code}: ${OWASP_CATEGORIES[code]}` : code;
 };
 
+// Helper function to format scanner names
+const formatScannerName = (scanner) => {
+  const formattedNames = {
+    "zero_day": "Zero-Day Detector (AI)",
+    "business_logic": "Business Logic (AI)",
+    "llm_security": "LLM Security (AI)",
+    "auth_scanner": "Auth Scanner (AI)",
+    "npm_audit": "NPM Audit",
+    "pip_audit": "Pip Audit",
+    "cargo_audit": "Cargo Audit"
+  };
+
+  return formattedNames[scanner] || scanner.split('_').map(word =>
+    word.charAt(0).toUpperCase() + word.slice(1)
+  ).join(' ');
+};
+
 // Helper function to truncate text
 const truncateText = (text, maxLength) => {
   if (!text) return "";
   return text.length > maxLength ? text.substring(0, maxLength) + "..." : text;
+};
+
+// Helper function to extract error message from API response
+const getErrorMessage = (error) => {
+  const detail = error.response?.data?.detail;
+  if (!detail) return error.message || "An error occurred";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    // Pydantic validation errors are arrays of objects with {type, loc, msg}
+    return detail.map(e => e.msg || JSON.stringify(e)).join(", ");
+  }
+  if (typeof detail === "object") return detail.msg || JSON.stringify(detail);
+  return String(detail);
 };
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -48,10 +78,22 @@ const API = `${BACKEND_URL}/api`;
 const Dashboard = () => {
   const [repositories, setRepositories] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [gitIntegrations, setGitIntegrations] = useState([]);
+  const [connectedRepos, setConnectedRepos] = useState([]);
+  const [aiStatus, setAiStatus] = useState({ configured: false, providers: [] });
+  const [viewMode, setViewMode] = useState(() => {
+    return localStorage.getItem("repoViewMode") || "grid";
+  });
   const navigate = useNavigate();
 
   useEffect(() => {
+    localStorage.setItem("repoViewMode", viewMode);
+  }, [viewMode]);
+
+  useEffect(() => {
     fetchRepositories();
+    fetchGitIntegrations();
+    fetchAiStatus();
   }, []);
 
   const fetchRepositories = async () => {
@@ -60,9 +102,52 @@ const Dashboard = () => {
       setRepositories(response.data);
     } catch (error) {
       console.error("Failed to fetch repositories:", error);
-      toast.error(`Failed to fetch repositories: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to fetch repositories: ${getErrorMessage(error)}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchGitIntegrations = async () => {
+    try {
+      const [integrationsRes, reposRes] = await Promise.all([
+        axios.get(`${API}/integrations/git`).catch(() => ({ data: { integrations: [] } })),
+        axios.get(`${API}/repositories`).catch(() => ({ data: { repositories: [] } }))
+      ]);
+      setGitIntegrations(integrationsRes.data.integrations || []);
+      setConnectedRepos(reposRes.data.repositories || []);
+    } catch (error) {
+      console.error("Failed to fetch git integrations:", error);
+    }
+  };
+
+  const fetchAiStatus = async () => {
+    try {
+      const response = await axios.get(`${API}/settings`);
+      const keys = response.data.llm_api_keys || {};
+      const scannerSettings = response.data.ai_scanner_settings || {};
+
+      const providers = [];
+      if (keys.openai_api_key) providers.push("OpenAI");
+      if (keys.anthropic_api_key) providers.push("Claude");
+      if (keys.gemini_api_key) providers.push("Gemini");
+
+      // AI Analysis is configured if ANY AI scanner is enabled (they work without API keys)
+      const aiScannersEnabled =
+        scannerSettings.enable_zero_day_detector !== false ||
+        scannerSettings.enable_business_logic_scanner !== false ||
+        scannerSettings.enable_llm_security_scanner !== false ||
+        scannerSettings.enable_auth_scanner !== false;
+
+      setAiStatus({
+        configured: aiScannersEnabled,
+        providers,
+        scannerSettings,
+        hasApiKeys: providers.length > 0,
+        snykConfigured: !!keys.snyk_token
+      });
+    } catch (error) {
+      console.error("Failed to fetch AI status:", error);
     }
   };
 
@@ -86,7 +171,7 @@ const Dashboard = () => {
       fetchRepositories();
     } catch (error) {
       console.error("Failed to delete repository:", error);
-      toast.error(`Failed to delete repository: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to delete repository: ${getErrorMessage(error)}`);
     }
   };
 
@@ -97,11 +182,335 @@ const Dashboard = () => {
           <h1 className="text-4xl font-bold" data-testid="dashboard-title">Security Dashboard</h1>
           <p className="text-muted-foreground mt-2">Monitor and manage repository security scans</p>
         </div>
-        <Button onClick={() => navigate("/add-repository")} size="lg" data-testid="add-repo-btn">
-          <Database className="mr-2 h-5 w-5" />
-          Add Repository
-        </Button>
       </div>
+
+      {/* Git Integrations Quick Status */}
+      {gitIntegrations.length > 0 && (
+        <Card className="bg-gradient-to-r from-primary/5 to-primary/10 border-primary/20">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Link2 className="h-5 w-5 text-primary" />
+                  <span className="font-medium">Git Integrations</span>
+                </div>
+                <div className="flex gap-2">
+                  {gitIntegrations.map((integration, idx) => (
+                    <Badge key={idx} variant="outline" className="flex items-center gap-1">
+                      {integration.provider === "github" ? (
+                        <Github className="h-3 w-3" />
+                      ) : (
+                        <GitBranch className="h-3 w-3" />
+                      )}
+                      {integration.username || integration.name}
+                      {integration.is_connected && (
+                        <CheckCircle className="h-3 w-3 text-green-500" />
+                      )}
+                    </Badge>
+                  ))}
+                </div>
+                {connectedRepos.length > 0 && (
+                  <span className="text-sm text-muted-foreground">
+                    {connectedRepos.length} repo{connectedRepos.length !== 1 ? 's' : ''} connected
+                  </span>
+                )}
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => navigate("/settings")}>
+                <Settings className="h-4 w-4 mr-1" />
+                Manage
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Quick Setup Banner for New Users */}
+      {gitIntegrations.length === 0 && repositories.length === 0 && !loading && (
+        <Card className="border-dashed border-2 bg-muted/30">
+          <CardContent className="py-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Github className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold">Connect Your Git Provider</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Connect GitHub or GitLab to easily scan your repositories
+                  </p>
+                </div>
+              </div>
+              <Button onClick={() => navigate("/settings")}>
+                <Link2 className="h-4 w-4 mr-2" />
+                Connect Now
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* AI-Powered Security Analysis Status */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <Card className={`${aiStatus.configured ? 'bg-gradient-to-br from-purple-500/10 to-blue-500/10 border-purple-500/20' : 'bg-muted/30 border-dashed'}`}>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${aiStatus.configured ? 'bg-purple-500/20' : 'bg-muted'}`}>
+                <Sparkles className={`h-5 w-5 ${aiStatus.configured ? 'text-purple-500' : 'text-muted-foreground'}`} />
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">AI Analysis</div>
+                <div className="font-semibold flex items-center gap-2">
+                  {aiStatus.configured ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      Active
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-4 w-4 text-muted-foreground" />
+                      Not Configured
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            {aiStatus.providers.length > 0 && (
+              <div className="mt-2 flex gap-1">
+                {aiStatus.providers.map((p, i) => (
+                  <Badge key={i} variant="secondary" className="text-xs">{p}</Badge>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className={`bg-gradient-to-br from-amber-500/10 to-orange-500/10 ${
+          aiStatus.scannerSettings?.enable_zero_day_detector !== false
+            ? 'border-amber-500/20'
+            : 'border-dashed border-muted opacity-60'
+        }`}>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                aiStatus.scannerSettings?.enable_zero_day_detector !== false
+                  ? 'bg-amber-500/20'
+                  : 'bg-muted'
+              }`}>
+                <AlertTriangle className={`h-5 w-5 ${
+                  aiStatus.scannerSettings?.enable_zero_day_detector !== false
+                    ? 'text-amber-500'
+                    : 'text-muted-foreground'
+                }`} />
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Zero-Day Detector</div>
+                <div className="font-semibold flex items-center gap-2">
+                  {aiStatus.scannerSettings?.enable_zero_day_detector !== false ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      AI-Powered
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-4 w-4 text-muted-foreground" />
+                      Disabled
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">Detects unknown vulnerabilities using pattern analysis</p>
+          </CardContent>
+        </Card>
+
+        <Card className={`bg-gradient-to-br from-blue-500/10 to-cyan-500/10 ${
+          aiStatus.scannerSettings?.enable_business_logic_scanner !== false
+            ? 'border-blue-500/20'
+            : 'border-dashed border-muted opacity-60'
+        }`}>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                aiStatus.scannerSettings?.enable_business_logic_scanner !== false
+                  ? 'bg-blue-500/20'
+                  : 'bg-muted'
+              }`}>
+                <Shield className={`h-5 w-5 ${
+                  aiStatus.scannerSettings?.enable_business_logic_scanner !== false
+                    ? 'text-blue-500'
+                    : 'text-muted-foreground'
+                }`} />
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Business Logic</div>
+                <div className="font-semibold flex items-center gap-2">
+                  {aiStatus.scannerSettings?.enable_business_logic_scanner !== false ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      Active
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-4 w-4 text-muted-foreground" />
+                      Disabled
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">Analyzes code for logic flaws & design issues</p>
+          </CardContent>
+        </Card>
+
+        <Card className={`bg-gradient-to-br from-emerald-500/10 to-green-500/10 ${
+          aiStatus.scannerSettings?.enable_llm_security_scanner !== false
+            ? 'border-emerald-500/20'
+            : 'border-dashed border-muted opacity-60'
+        }`}>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                aiStatus.scannerSettings?.enable_llm_security_scanner !== false
+                  ? 'bg-emerald-500/20'
+                  : 'bg-muted'
+              }`}>
+                <Activity className={`h-5 w-5 ${
+                  aiStatus.scannerSettings?.enable_llm_security_scanner !== false
+                    ? 'text-emerald-500'
+                    : 'text-muted-foreground'
+                }`} />
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">LLM Security</div>
+                <div className="font-semibold flex items-center gap-2">
+                  {aiStatus.scannerSettings?.enable_llm_security_scanner !== false ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      Active
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-4 w-4 text-muted-foreground" />
+                      Disabled
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">Tests for prompt injection & AI vulnerabilities</p>
+          </CardContent>
+        </Card>
+
+        <Card className={`bg-gradient-to-br from-rose-500/10 to-pink-500/10 ${
+          aiStatus.scannerSettings?.enable_auth_scanner !== false
+            ? 'border-rose-500/20'
+            : 'border-dashed border-muted opacity-60'
+        }`}>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                aiStatus.scannerSettings?.enable_auth_scanner !== false
+                  ? 'bg-rose-500/20'
+                  : 'bg-muted'
+              }`}>
+                <Lock className={`h-5 w-5 ${
+                  aiStatus.scannerSettings?.enable_auth_scanner !== false
+                    ? 'text-rose-500'
+                    : 'text-muted-foreground'
+                }`} />
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Auth Scanner</div>
+                <div className="font-semibold flex items-center gap-2">
+                  {aiStatus.scannerSettings?.enable_auth_scanner !== false ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      Active
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-4 w-4 text-muted-foreground" />
+                      Disabled
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">JWT, OAuth & session security testing</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Configure AI Prompt - Show only when no scanners are enabled */}
+      {!aiStatus.configured && (
+        <Card className="border-dashed border-2 bg-gradient-to-r from-purple-500/5 to-blue-500/5">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <Sparkles className="h-8 w-8 text-purple-500" />
+                <div>
+                  <h3 className="font-semibold">Enable AI-Powered Scanners</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Enable scanners in settings to activate Zero-Day Detection, Business Logic & Auth Scanning
+                  </p>
+                </div>
+              </div>
+              <Button variant="outline" onClick={() => navigate("/settings")}>
+                <Settings className="h-4 w-4 mr-2" />
+                Configure Scanners
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* API Keys Prompt - Show when scanners are enabled but no LLM keys configured */}
+      {aiStatus.configured && !aiStatus.hasApiKeys && (
+        <Card className="border-dashed border-2 bg-gradient-to-r from-amber-500/5 to-orange-500/5">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <Key className="h-8 w-8 text-amber-500" />
+                <div>
+                  <h3 className="font-semibold">Enhance with LLM API Keys (Optional)</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Add OpenAI, Claude, or Gemini API keys to enable AI fix recommendations and enhanced LLM Security testing
+                  </p>
+                </div>
+              </div>
+              <Button variant="outline" onClick={() => navigate("/settings")}>
+                <Key className="h-4 w-4 mr-2" />
+                Add API Key
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Repositories Section Header */}
+      {!loading && repositories.length > 0 && (
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold">Repositories ({repositories.length})</h2>
+          <div className="flex items-center gap-2 bg-muted p-1 rounded-lg">
+            <Button
+              variant={viewMode === "grid" ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setViewMode("grid")}
+              className="h-8"
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={viewMode === "list" ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setViewMode("list")}
+              className="h-8"
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -129,35 +538,87 @@ const Dashboard = () => {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className={viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" : "space-y-4"}>
           {repositories.map((repo) => (
-            <Card key={repo.id} className="hover:shadow-lg hover:scale-105 transition-all duration-300 cursor-pointer border-2 hover:border-primary" onClick={() => navigate(`/repository/${repo.id}`)} data-testid={`repo-card-${repo.id}`}>
-              <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <CardTitle className="flex items-center gap-2">
-                      <GitBranch className="h-5 w-5" />
-                      {truncateText(repo.name, 15)}
-                    </CardTitle>
-                    <CardDescription className="mt-1 truncate">{repo.url}</CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
+            <Card key={repo.id} className={`cursor-pointer border-2 hover:border-primary transition-all ${viewMode === "grid" ? "hover:shadow-lg hover:scale-105 duration-300" : "hover:shadow-md"}`} onClick={() => navigate(`/repository/${repo.id}`)} data-testid={`repo-card-${repo.id}`}>
+              {viewMode === "list" ? (
+                /* List View */
+                <CardContent className="py-4">
+                  <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <GitBranch className="h-5 w-5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold truncate">{repo.name}</div>
+                        <div className="text-sm text-muted-foreground truncate">{repo.url}</div>
+                      </div>
+                    </div>
+
+                    {repo.security_score !== null && repo.security_score !== undefined ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Score:</span>
+                        <span className={`text-xl font-bold ${repo.security_score >= 90 ? 'text-green-500' : repo.security_score >= 70 ? 'text-amber-500' : 'text-red-500'}`}>
+                          {repo.security_score}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">No scan yet</span>
+                    )}
+
+                    {repo.critical_count > 0 && (
+                      <span className="flex items-center gap-1 text-red-500 font-medium text-sm">
+                        <span className="w-2 h-2 rounded-full bg-red-500" />
+                        {repo.critical_count} Critical
+                      </span>
+                    )}
+
+                    <div className="text-sm text-muted-foreground">
+                      {repo.branch}
+                    </div>
+
                     <Badge className={getSeverityColor(repo.scan_status)} data-testid={`repo-status-${repo.id}`}>
                       {repo.scan_status}
                     </Badge>
+
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="text-muted-foreground hover:text-destructive h-8 w-8"
+                      className="text-muted-foreground hover:text-destructive h-8 w-8 flex-shrink-0"
                       onClick={(e) => deleteRepository(e, repo.id, repo.name)}
                       data-testid={`delete-repo-${repo.id}`}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
-                </div>
-              </CardHeader>
-              <CardContent>
+                </CardContent>
+              ) : (
+                /* Grid View */
+                <>
+                  <CardHeader>
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <CardTitle className="flex items-center gap-2">
+                          <GitBranch className="h-5 w-5" />
+                          {truncateText(repo.name, 15)}
+                        </CardTitle>
+                        <CardDescription className="mt-1 truncate">{repo.url}</CardDescription>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className={getSeverityColor(repo.scan_status)} data-testid={`repo-status-${repo.id}`}>
+                          {repo.scan_status}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-destructive h-8 w-8"
+                          onClick={(e) => deleteRepository(e, repo.id, repo.name)}
+                          data-testid={`delete-repo-${repo.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
                 <div className="space-y-3">
                   {/* Security Score Display */}
                   {repo.security_score !== null && repo.security_score !== undefined ? (
@@ -227,6 +688,8 @@ const Dashboard = () => {
                   </Button>
                 </div>
               </CardContent>
+                </>
+              )}
             </Card>
           ))}
         </div>
@@ -240,7 +703,8 @@ const AddRepository = () => {
     name: "",
     url: "",
     access_token: "",
-    branch: "main"
+    branch: "main",
+    is_public: false
   });
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -250,12 +714,34 @@ const AddRepository = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API}/repositories`, formData);
+      // Determine provider from URL
+      let provider = "github";
+      if (formData.url.includes("gitlab")) {
+        provider = "gitlab";
+      }
+
+      const requestData = {
+        provider: provider,
+        repo_url: formData.url,
+        auto_scan: false,
+        branch: formData.branch || "main",
+        is_public: formData.is_public,
+        access_token: formData.is_public ? null : formData.access_token
+      };
+
+      const response = await axios.post(`${API}/repositories`, requestData);
       toast.success("Repository added successfully!");
-      navigate(`/repository/${response.data.id}`);
+
+      // Navigate to dashboard or repository detail
+      const repoId = response.data.repository?.repo_id;
+      if (repoId) {
+        navigate(`/repository/${repoId}`);
+      } else {
+        navigate("/");
+      }
     } catch (error) {
       console.error("Failed to add repository:", error);
-      toast.error(`Failed to add repository: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to add repository: ${getErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -272,18 +758,6 @@ const AddRepository = () => {
         <CardContent className="pt-6">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
-              <Label htmlFor="name">Repository Name</Label>
-              <Input
-                id="name"
-                data-testid="repo-name-input"
-                placeholder="my-awesome-project"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                required
-              />
-            </div>
-
-            <div className="space-y-2">
               <Label htmlFor="url">Repository URL</Label>
               <Input
                 id="url"
@@ -293,24 +767,45 @@ const AddRepository = () => {
                 onChange={(e) => setFormData({ ...formData, url: e.target.value })}
                 required
               />
+              <p className="text-xs text-muted-foreground">
+                Enter the full URL of your GitHub or GitLab repository
+              </p>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="token">Access Token</Label>
-              <Input
-                id="token"
-                data-testid="repo-token-input"
-                type="password"
-                placeholder="ghp_xxxxxxxxxxxx"
-                value={formData.access_token}
-                onChange={(e) => setFormData({ ...formData, access_token: e.target.value })}
-                required
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="is_public"
+                data-testid="is-public-checkbox"
+                checked={formData.is_public}
+                onChange={(e) => setFormData({ ...formData, is_public: e.target.checked, access_token: e.target.checked ? "" : formData.access_token })}
+                className="w-4 h-4 rounded border-gray-300"
               />
-              <p className="text-xs text-muted-foreground">Personal Access Token with repo access</p>
+              <Label htmlFor="is_public" className="cursor-pointer font-normal">
+                This is a public repository (no access token required)
+              </Label>
             </div>
 
+            {!formData.is_public && (
+              <div className="space-y-2">
+                <Label htmlFor="token">Access Token</Label>
+                <Input
+                  id="token"
+                  data-testid="repo-token-input"
+                  type="password"
+                  placeholder="ghp_xxxxxxxxxxxx or glpat-xxxxxxxxxxxx"
+                  value={formData.access_token}
+                  onChange={(e) => setFormData({ ...formData, access_token: e.target.value })}
+                  required={!formData.is_public}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Personal Access Token with repo access (required for private repositories)
+                </p>
+              </div>
+            )}
+
             <div className="space-y-2">
-              <Label htmlFor="branch">Branch</Label>
+              <Label htmlFor="branch">Branch (Optional)</Label>
               <Input
                 id="branch"
                 data-testid="repo-branch-input"
@@ -318,6 +813,9 @@ const AddRepository = () => {
                 value={formData.branch}
                 onChange={(e) => setFormData({ ...formData, branch: e.target.value })}
               />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to use the default branch
+              </p>
             </div>
 
             <div className="flex gap-4">
@@ -369,7 +867,7 @@ const RepositoryDetail = () => {
       setStats(statsRes.data);
     } catch (error) {
       console.error("Failed to fetch repository data:", error);
-      toast.error(`Failed to fetch repository data: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to fetch repository data: ${getErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -383,7 +881,7 @@ const RepositoryDetail = () => {
       setTimeout(fetchRepositoryData, 2000);
     } catch (error) {
       console.error("Failed to start scan:", error);
-      toast.error(`Failed to start scan: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to start scan: ${getErrorMessage(error)}`);
     } finally {
       setScanning(false);
     }
@@ -400,7 +898,7 @@ const RepositoryDetail = () => {
       fetchRepositoryData();
     } catch (error) {
       console.error("Failed to delete scan:", error);
-      toast.error(`Failed to delete scan: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to delete scan: ${getErrorMessage(error)}`);
     }
   };
 
@@ -537,6 +1035,30 @@ const RepositoryDetail = () => {
                                 {scan.status}
                               </Badge>
                             </div>
+                            {scan.completed_at && (
+                              <div className="text-sm text-muted-foreground mb-3">
+                                <Clock className="h-3 w-3 inline mr-1" />
+                                Completed: {new Date(scan.completed_at).toLocaleString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </div>
+                            )}
+                            {!scan.completed_at && scan.started_at && (
+                              <div className="text-sm text-muted-foreground mb-3">
+                                <Clock className="h-3 w-3 inline mr-1" />
+                                Started: {new Date(scan.started_at).toLocaleString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </div>
+                            )}
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
                               <div>
                                 <div className="text-sm text-muted-foreground">Total Issues</div>
@@ -713,7 +1235,7 @@ const ScanDetail = () => {
       setComplianceIssues(complianceRes.data || []);
     } catch (error) {
       console.error("Failed to fetch scan data:", error);
-      toast.error(`Failed to fetch scan data: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to fetch scan data: ${getErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -736,9 +1258,15 @@ const ScanDetail = () => {
     }
 
     if (filterScanner.length > 0) {
-      allIssues = allIssues.filter(v =>
-        filterScanner.some(scanner => v.detected_by?.toLowerCase() === scanner.toLowerCase())
-      );
+      allIssues = allIssues.filter(v => {
+        if (!v.detected_by) return false;
+        const detectedBy = v.detected_by.toLowerCase();
+        return filterScanner.some(scanner => {
+          const scannerLower = scanner.toLowerCase();
+          // Check if detected_by contains the scanner name or vice versa
+          return detectedBy.includes(scannerLower) || scannerLower.includes(detectedBy.replace(/\s+/g, ''));
+        });
+      });
     }
 
     setFilteredVulns(allIssues);
@@ -759,7 +1287,7 @@ const ScanDetail = () => {
       toast.success("AI recommendation generated!");
     } catch (error) {
       console.error("Failed to generate AI recommendation:", error);
-      toast.error(`Failed to generate AI recommendation: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to generate AI recommendation: ${getErrorMessage(error)}`);
     } finally {
       setLoadingAI(false);
     }
@@ -864,8 +1392,8 @@ const ScanDetail = () => {
             <CardDescription>Quality</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${(scan.quality_score || 100) >= 70 ? 'text-green-500' : (scan.quality_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
-              {scan.quality_score || 100}
+            <div className={`text-2xl font-bold ${(scan?.quality_score || 100) >= 70 ? 'text-green-500' : (scan?.quality_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
+              {scan?.quality_score || 100}
             </div>
           </CardContent>
         </Card>
@@ -875,18 +1403,18 @@ const ScanDetail = () => {
             <CardDescription>Compliance</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${(scan.compliance_score || 100) >= 70 ? 'text-green-500' : (scan.compliance_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
-              {scan.compliance_score || 100}
+            <div className={`text-2xl font-bold ${(scan?.compliance_score || 100) >= 70 ? 'text-green-500' : (scan?.compliance_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
+              {scan?.compliance_score || 100}
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Vulnerabilities</CardDescription>
+            <CardDescription>Security Issues</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold" data-testid="scan-total-issues">{scan.vulnerabilities_count}</div>
+            <div className="text-2xl font-bold" data-testid="scan-total-issues">{scan?.vulnerabilities_count || 0}</div>
           </CardContent>
         </Card>
 
@@ -895,7 +1423,7 @@ const ScanDetail = () => {
             <CardDescription>Critical</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-500" data-testid="scan-critical">{scan.critical_count}</div>
+            <div className="text-2xl font-bold text-red-500" data-testid="scan-critical">{scan?.critical_count || 0}</div>
           </CardContent>
         </Card>
 
@@ -904,7 +1432,7 @@ const ScanDetail = () => {
             <CardDescription>High</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-orange-500" data-testid="scan-high">{scan.high_count}</div>
+            <div className="text-2xl font-bold text-orange-500" data-testid="scan-high">{scan?.high_count || 0}</div>
           </CardContent>
         </Card>
 
@@ -913,12 +1441,12 @@ const ScanDetail = () => {
             <CardDescription>Quality Issues</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-500">{scan.quality_issues_count || qualityIssues.length}</div>
+            <div className="text-2xl font-bold text-blue-500">{scan?.quality_issues_count || qualityIssues.length}</div>
           </CardContent>
         </Card>
       </div>
 
-      {scan.scan_results && Object.keys(scan.scan_results).length > 0 && (
+      {scan?.scan_results && Object.keys(scan.scan_results).length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -946,7 +1474,7 @@ const ScanDetail = () => {
                       }
                     }}
                   >
-                    <div className="capitalize font-medium">{scanner}</div>
+                    <div className="font-medium">{formatScannerName(scanner)}</div>
                     <Badge variant={count > 0 ? "default" : "secondary"}>{count}</Badge>
                   </div>
                 );
@@ -957,7 +1485,7 @@ const ScanDetail = () => {
                 <span className="text-sm text-muted-foreground">Filtered by:</span>
                 {filterScanner.map(scanner => (
                   <Badge key={scanner} variant="outline" className="text-sm">
-                    {scanner}
+                    {formatScannerName(scanner)}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1040,7 +1568,8 @@ const ScanDetail = () => {
 
       <Card>
         <CardHeader>
-          <CardTitle>Vulnerabilities ({filteredVulns.length})</CardTitle>
+          <CardTitle>All Issues ({filteredVulns.length})</CardTitle>
+          <CardDescription>Security vulnerabilities, quality issues, and compliance findings</CardDescription>
         </CardHeader>
         <CardContent>
           <Accordion type="single" collapsible className="w-full">
@@ -1179,11 +1708,19 @@ const ScanDetail = () => {
 
 const SettingsPage = () => {
   const [apiKeys, setApiKeys] = useState({
-    openai_key: "",
-    anthropic_key: "",
-    gemini_key: ""
+    openai_api_key: "",
+    anthropic_api_key: "",
+    gemini_api_key: "",
+    github_token: "",
+    snyk_token: ""
   });
   const [apiKeyStatus, setApiKeyStatus] = useState({});
+  const [aiScannerSettings, setAiScannerSettings] = useState({
+    enable_zero_day_detector: true,
+    enable_business_logic_scanner: true,
+    enable_llm_security_scanner: true,
+    enable_auth_scanner: true
+  });
   const [scanners, setScanners] = useState({});
   const [scannerConfig, setScannerConfig] = useState(() => {
     const saved = localStorage.getItem("scannerConfig");
@@ -1191,6 +1728,21 @@ const SettingsPage = () => {
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingAiSettings, setSavingAiSettings] = useState(false);
+
+  // Git Integrations State
+  const [gitIntegrations, setGitIntegrations] = useState([]);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [connectingProvider, setConnectingProvider] = useState(null);
+  const [newIntegration, setNewIntegration] = useState({
+    provider: "github",
+    name: "",
+    access_token: "",
+    base_url: ""
+  });
+  const [connectedRepos, setConnectedRepos] = useState([]);
+  const [remoteRepos, setRemoteRepos] = useState([]);
+  const [loadingRepos, setLoadingRepos] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -1202,12 +1754,23 @@ const SettingsPage = () => {
 
   const fetchSettings = async () => {
     try {
-      const [keysRes, scannersRes] = await Promise.all([
-        axios.get(`${API}/settings/api-keys`),
-        axios.get(`${API}/settings/scanners`)
+      const [settingsRes, scannersRes, aiScannersRes, integrationsRes, reposRes] = await Promise.all([
+        axios.get(`${API}/settings`),
+        axios.get(`${API}/settings/scanners`),
+        axios.get(`${API}/settings/ai-scanners`).catch(() => ({ data: {
+          enable_zero_day_detector: true,
+          enable_business_logic_scanner: true,
+          enable_llm_security_scanner: true,
+          enable_auth_scanner: false
+        }})),
+        axios.get(`${API}/integrations/git`).catch(() => ({ data: { integrations: [] } })),
+        axios.get(`${API}/repositories`).catch(() => ({ data: { repositories: [] } }))
       ]);
-      setApiKeyStatus(keysRes.data);
+      setApiKeyStatus(settingsRes.data.llm_api_keys || {});
+      setAiScannerSettings(aiScannersRes.data);
       setScanners(scannersRes.data);
+      setGitIntegrations(integrationsRes.data.integrations || []);
+      setConnectedRepos(reposRes.data.repositories || []);
 
       // Initialize scanner config if not already set
       const savedConfig = localStorage.getItem("scannerConfig");
@@ -1223,6 +1786,82 @@ const SettingsPage = () => {
       toast.error("Failed to load settings");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Git Integration Functions
+  const connectGitProvider = async () => {
+    if (!newIntegration.name || !newIntegration.access_token) {
+      toast.error("Please provide a name and access token");
+      return;
+    }
+
+    setConnectingProvider(newIntegration.provider);
+    try {
+      await axios.post(`${API}/integrations/git/connect`, {
+        provider: newIntegration.provider,
+        name: newIntegration.name,
+        access_token: newIntegration.access_token,
+        base_url: newIntegration.base_url || null
+      });
+      toast.success(`Connected to ${newIntegration.provider}!`);
+      setShowConnectModal(false);
+      setNewIntegration({ provider: "github", name: "", access_token: "", base_url: "" });
+      fetchSettings();
+    } catch (error) {
+      toast.error(getErrorMessage(error) || "Failed to connect");
+    } finally {
+      setConnectingProvider(null);
+    }
+  };
+
+  const disconnectGitProvider = async (provider, name) => {
+    if (!window.confirm(`Disconnect ${provider}? This will remove all associated repositories.`)) return;
+
+    try {
+      await axios.delete(`${API}/integrations/git/${provider}?name=${encodeURIComponent(name)}`);
+      toast.success(`Disconnected from ${provider}`);
+      fetchSettings();
+    } catch (error) {
+      toast.error(getErrorMessage(error) || "Failed to disconnect");
+    }
+  };
+
+  const fetchRemoteRepos = async (provider) => {
+    setLoadingRepos(true);
+    try {
+      const res = await axios.get(`${API}/integrations/git/${provider}/repositories`);
+      setRemoteRepos(res.data.repositories || []);
+    } catch (error) {
+      toast.error("Failed to fetch repositories");
+    } finally {
+      setLoadingRepos(false);
+    }
+  };
+
+  const addRepository = async (provider, repoUrl) => {
+    try {
+      await axios.post(`${API}/repositories`, {
+        provider,
+        repo_url: repoUrl,
+        auto_scan: false
+      });
+      toast.success("Repository added!");
+      fetchSettings();
+    } catch (error) {
+      toast.error(getErrorMessage(error) || "Failed to add repository");
+    }
+  };
+
+  const removeRepository = async (repoId) => {
+    if (!window.confirm("Remove this repository?")) return;
+
+    try {
+      await axios.delete(`${API}/repositories/${repoId}`);
+      toast.success("Repository removed");
+      fetchSettings();
+    } catch (error) {
+      toast.error("Failed to remove repository");
     }
   };
 
@@ -1256,51 +1895,73 @@ const SettingsPage = () => {
     setSaving(true);
     try {
       const keysToUpdate = {};
-      if (apiKeys.openai_key) keysToUpdate.openai_key = apiKeys.openai_key;
-      if (apiKeys.anthropic_key) keysToUpdate.anthropic_key = apiKeys.anthropic_key;
-      if (apiKeys.gemini_key) keysToUpdate.gemini_key = apiKeys.gemini_key;
+      if (apiKeys.openai_api_key) keysToUpdate.openai_api_key = apiKeys.openai_api_key;
+      if (apiKeys.anthropic_api_key) keysToUpdate.anthropic_api_key = apiKeys.anthropic_api_key;
+      if (apiKeys.gemini_api_key) keysToUpdate.gemini_api_key = apiKeys.gemini_api_key;
+      if (apiKeys.github_token) keysToUpdate.github_token = apiKeys.github_token;
+      if (apiKeys.snyk_token) keysToUpdate.snyk_token = apiKeys.snyk_token;
 
       if (Object.keys(keysToUpdate).length === 0) {
-        toast.error("Please enter at least one API key");
+        toast.error("Please enter at least one API key or token");
         return;
       }
 
       await axios.post(`${API}/settings/api-keys`, keysToUpdate);
 
-      // Also save to localStorage for persistence
-      Object.entries(keysToUpdate).forEach(([key, value]) => {
-        if (value) {
-          localStorage.setItem(key, value);
-        }
-      });
-
       toast.success("API keys saved successfully!");
-      setApiKeys({ openai_key: "", anthropic_key: "", gemini_key: "" });
+      setApiKeys({
+        openai_api_key: "",
+        anthropic_api_key: "",
+        gemini_api_key: "",
+        github_token: "",
+        snyk_token: ""
+      });
       fetchSettings();
     } catch (error) {
       console.error("Failed to save API keys:", error);
-      toast.error(`Failed to save API keys: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to save API keys: ${getErrorMessage(error)}`);
     } finally {
       setSaving(false);
     }
   };
 
-  const deleteApiKey = async (provider) => {
-    if (!window.confirm(`Are you sure you want to delete the ${provider} API key?`)) {
+  const deleteApiKey = async (keyName) => {
+    if (!window.confirm(`Are you sure you want to delete this ${keyName.replace('_', ' ')}?`)) {
       return;
     }
     try {
-      await axios.delete(`${API}/settings/api-keys/${provider}`);
+      // Send empty string to delete the key
+      const deletePayload = {};
+      deletePayload[keyName] = "";
+      await axios.post(`${API}/settings/api-keys`, deletePayload);
 
-      // Also remove from localStorage
-      localStorage.removeItem(`${provider}_key`);
-
-      toast.success(`${provider} API key deleted!`);
+      toast.success(`${keyName.replace('_', ' ')} deleted!`);
       fetchSettings();
     } catch (error) {
       console.error("Failed to delete API key:", error);
-      toast.error(`Failed to delete API key: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to delete API key: ${getErrorMessage(error)}`);
     }
+  };
+
+  const saveAiScannerSettings = async () => {
+    setSavingAiSettings(true);
+    try {
+      await axios.post(`${API}/settings/ai-scanners`, aiScannerSettings);
+      toast.success("AI scanner settings saved successfully!");
+      fetchSettings();
+    } catch (error) {
+      console.error("Failed to save AI scanner settings:", error);
+      toast.error(`Failed to save AI scanner settings: ${getErrorMessage(error)}`);
+    } finally {
+      setSavingAiSettings(false);
+    }
+  };
+
+  const toggleAiScanner = (scannerKey) => {
+    setAiScannerSettings(prev => ({
+      ...prev,
+      [scannerKey]: !prev[scannerKey]
+    }));
   };
 
   if (loading) {
@@ -1318,33 +1979,35 @@ const SettingsPage = () => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="h-5 w-5" />
-            LLM API Keys
+            API Keys & Tokens
           </CardTitle>
           <CardDescription>
-            Configure API keys for AI-powered vulnerability fix recommendations
+            Configure API keys for AI-powered features and scanner integrations
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-4">
+            <div className="font-semibold text-sm text-muted-foreground">LLM API Keys</div>
+
             <div className="space-y-2">
               <Label htmlFor="openai">OpenAI API Key</Label>
               <div className="flex gap-2">
                 <Input
                   id="openai"
                   type="password"
-                  placeholder={apiKeyStatus.openai?.configured ? "••••••••••••••••" : "sk-..."}
-                  value={apiKeys.openai_key}
-                  onChange={(e) => setApiKeys({ ...apiKeys, openai_key: e.target.value })}
+                  placeholder={apiKeyStatus.openai_api_key ? "••••••••••••••••" : "sk-..."}
+                  value={apiKeys.openai_api_key}
+                  onChange={(e) => setApiKeys({ ...apiKeys, openai_api_key: e.target.value })}
                   className="flex-1"
                 />
-                {apiKeyStatus.openai?.configured && (
-                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("openai")}>
+                {apiKeyStatus.openai_api_key && (
+                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("openai_api_key")}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 )}
               </div>
               <div className="flex items-center gap-2 text-sm">
-                {apiKeyStatus.openai?.configured ? (
+                {apiKeyStatus.openai_api_key ? (
                   <><CheckCircle className="h-4 w-4 text-green-500" /> Configured</>
                 ) : (
                   <><XCircle className="h-4 w-4 text-red-500" /> Not configured</>
@@ -1358,19 +2021,19 @@ const SettingsPage = () => {
                 <Input
                   id="anthropic"
                   type="password"
-                  placeholder={apiKeyStatus.anthropic?.configured ? "••••••••••••••••" : "sk-ant-..."}
-                  value={apiKeys.anthropic_key}
-                  onChange={(e) => setApiKeys({ ...apiKeys, anthropic_key: e.target.value })}
+                  placeholder={apiKeyStatus.anthropic_api_key ? "••••••••••••••••" : "sk-ant-..."}
+                  value={apiKeys.anthropic_api_key}
+                  onChange={(e) => setApiKeys({ ...apiKeys, anthropic_api_key: e.target.value })}
                   className="flex-1"
                 />
-                {apiKeyStatus.anthropic?.configured && (
-                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("anthropic")}>
+                {apiKeyStatus.anthropic_api_key && (
+                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("anthropic_api_key")}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 )}
               </div>
               <div className="flex items-center gap-2 text-sm">
-                {apiKeyStatus.anthropic?.configured ? (
+                {apiKeyStatus.anthropic_api_key ? (
                   <><CheckCircle className="h-4 w-4 text-green-500" /> Configured</>
                 ) : (
                   <><XCircle className="h-4 w-4 text-red-500" /> Not configured</>
@@ -1384,22 +2047,51 @@ const SettingsPage = () => {
                 <Input
                   id="gemini"
                   type="password"
-                  placeholder={apiKeyStatus.gemini?.configured ? "••••••••••••••••" : "AIza..."}
-                  value={apiKeys.gemini_key}
-                  onChange={(e) => setApiKeys({ ...apiKeys, gemini_key: e.target.value })}
+                  placeholder={apiKeyStatus.gemini_api_key ? "••••••••••••••••" : "AIza..."}
+                  value={apiKeys.gemini_api_key}
+                  onChange={(e) => setApiKeys({ ...apiKeys, gemini_api_key: e.target.value })}
                   className="flex-1"
                 />
-                {apiKeyStatus.gemini?.configured && (
-                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("gemini")}>
+                {apiKeyStatus.gemini_api_key && (
+                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("gemini_api_key")}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 )}
               </div>
               <div className="flex items-center gap-2 text-sm">
-                {apiKeyStatus.gemini?.configured ? (
+                {apiKeyStatus.gemini_api_key ? (
                   <><CheckCircle className="h-4 w-4 text-green-500" /> Configured</>
                 ) : (
                   <><XCircle className="h-4 w-4 text-red-500" /> Not configured</>
+                )}
+              </div>
+            </div>
+
+            <Separator className="my-4" />
+            <div className="font-semibold text-sm text-muted-foreground">Scanner Tokens</div>
+
+            <div className="space-y-2">
+              <Label htmlFor="snyk">Snyk Token</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="snyk"
+                  type="password"
+                  placeholder={apiKeyStatus.snyk_token ? "••••••••••••••••" : "Enter Snyk token..."}
+                  value={apiKeys.snyk_token}
+                  onChange={(e) => setApiKeys({ ...apiKeys, snyk_token: e.target.value })}
+                  className="flex-1"
+                />
+                {apiKeyStatus.snyk_token && (
+                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("snyk_token")}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                {apiKeyStatus.snyk_token ? (
+                  <><CheckCircle className="h-4 w-4 text-green-500" /> Configured</>
+                ) : (
+                  <><XCircle className="h-4 w-4 text-gray-400" /> Optional - for Snyk scanner</>
                 )}
               </div>
             </div>
@@ -1408,6 +2100,372 @@ const SettingsPage = () => {
           <Button onClick={saveApiKeys} disabled={saving} className="w-full">
             {saving ? "Saving..." : "Save API Keys"}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* AI Scanner Settings Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5" />
+            AI-Powered Scanners
+          </CardTitle>
+          <CardDescription>
+            Enable or disable AI-powered security scanners
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="flex-1">
+                <div className="font-medium">Zero-Day Detector</div>
+                <div className="text-sm text-muted-foreground">
+                  ML-based anomaly detection for unknown vulnerabilities
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Badge variant={aiScannerSettings.enable_zero_day_detector ? "default" : "secondary"}>
+                  {aiScannerSettings.enable_zero_day_detector ? "Enabled" : "Disabled"}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => toggleAiScanner("enable_zero_day_detector")}
+                >
+                  {aiScannerSettings.enable_zero_day_detector ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="flex-1">
+                <div className="font-medium">Business Logic Scanner</div>
+                <div className="text-sm text-muted-foreground">
+                  Detects IDOR, workflow bypasses, race conditions, and logic flaws
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Badge variant={aiScannerSettings.enable_business_logic_scanner ? "default" : "secondary"}>
+                  {aiScannerSettings.enable_business_logic_scanner ? "Enabled" : "Disabled"}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => toggleAiScanner("enable_business_logic_scanner")}
+                >
+                  {aiScannerSettings.enable_business_logic_scanner ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="flex-1">
+                <div className="font-medium">LLM Security Scanner</div>
+                <div className="text-sm text-muted-foreground">
+                  Tests for prompt injection, jailbreaks, and AI security vulnerabilities
+                </div>
+                {(!apiKeyStatus.openai_api_key && !apiKeyStatus.anthropic_api_key && !apiKeyStatus.gemini_api_key) && (
+                  <div className="text-xs text-yellow-600 mt-1">
+                    ⚠️ Requires at least one LLM API key configured above
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <Badge variant={aiScannerSettings.enable_llm_security_scanner ? "default" : "secondary"}>
+                  {aiScannerSettings.enable_llm_security_scanner ? "Enabled" : "Disabled"}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => toggleAiScanner("enable_llm_security_scanner")}
+                >
+                  {aiScannerSettings.enable_llm_security_scanner ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="flex-1">
+                <div className="font-medium">Auth Scanner</div>
+                <div className="text-sm text-muted-foreground">
+                  Detects authentication and authorization vulnerabilities
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Badge variant={aiScannerSettings.enable_auth_scanner ? "default" : "secondary"}>
+                  {aiScannerSettings.enable_auth_scanner ? "Enabled" : "Disabled"}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => toggleAiScanner("enable_auth_scanner")}
+                >
+                  {aiScannerSettings.enable_auth_scanner ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <Button onClick={saveAiScannerSettings} disabled={savingAiSettings} className="w-full">
+            {savingAiSettings ? "Saving..." : "Save AI Scanner Settings"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Git Integrations Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Link2 className="h-5 w-5" />
+            Git Integrations
+          </CardTitle>
+          <CardDescription>
+            Connect GitHub or GitLab to scan repositories directly from your account
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Connected Integrations */}
+          <div className="space-y-4">
+            <div className="font-semibold text-sm text-muted-foreground">Connected Providers</div>
+
+            {gitIntegrations.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground border-2 border-dashed rounded-lg">
+                <Github className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                <p>No Git providers connected</p>
+                <p className="text-sm">Connect GitHub or GitLab to scan your repositories</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {gitIntegrations.map((integration, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-4 border rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                        {integration.provider === "github" ? (
+                          <Github className="h-5 w-5" />
+                        ) : (
+                          <GitBranch className="h-5 w-5" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="font-medium">{integration.name}</div>
+                        <div className="text-sm text-muted-foreground flex items-center gap-2">
+                          <span className="capitalize">{integration.provider}</span>
+                          {integration.username && (
+                            <>
+                              <span>•</span>
+                              <span>@{integration.username}</span>
+                            </>
+                          )}
+                          {integration.is_connected && (
+                            <Badge variant="outline" className="text-green-600 border-green-600">
+                              <CheckCircle className="h-3 w-3 mr-1" />
+                              Connected
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => fetchRemoteRepos(integration.provider)}
+                      >
+                        <RefreshCw className={`h-4 w-4 mr-1 ${loadingRepos ? 'animate-spin' : ''}`} />
+                        Repos
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => disconnectGitProvider(integration.provider, integration.name)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Connect New Provider Buttons */}
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewIntegration({ ...newIntegration, provider: "github", name: "My GitHub" });
+                  setShowConnectModal(true);
+                }}
+                disabled={gitIntegrations.some(i => i.provider === "github")}
+              >
+                <Github className="h-4 w-4 mr-2" />
+                Connect GitHub
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewIntegration({ ...newIntegration, provider: "gitlab", name: "My GitLab" });
+                  setShowConnectModal(true);
+                }}
+                disabled={gitIntegrations.some(i => i.provider === "gitlab")}
+              >
+                <GitBranch className="h-4 w-4 mr-2" />
+                Connect GitLab
+              </Button>
+            </div>
+          </div>
+
+          {/* Connect Modal */}
+          {showConnectModal && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <Card className="w-full max-w-md">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    {newIntegration.provider === "github" ? <Github className="h-5 w-5" /> : <GitBranch className="h-5 w-5" />}
+                    Connect {newIntegration.provider === "github" ? "GitHub" : "GitLab"}
+                  </CardTitle>
+                  <CardDescription>
+                    Enter your personal access token to connect
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="int-name">Integration Name</Label>
+                    <Input
+                      id="int-name"
+                      placeholder="My GitHub Account"
+                      value={newIntegration.name}
+                      onChange={(e) => setNewIntegration({ ...newIntegration, name: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="int-token">Personal Access Token</Label>
+                    <Input
+                      id="int-token"
+                      type="password"
+                      placeholder={newIntegration.provider === "github" ? "ghp_..." : "glpat-..."}
+                      value={newIntegration.access_token}
+                      onChange={(e) => setNewIntegration({ ...newIntegration, access_token: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {newIntegration.provider === "github" ? (
+                        <>Generate at <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className="text-primary underline">GitHub Settings → Tokens</a></>
+                      ) : (
+                        <>Generate at <a href="https://gitlab.com/-/profile/personal_access_tokens" target="_blank" rel="noopener noreferrer" className="text-primary underline">GitLab Settings → Access Tokens</a></>
+                      )}
+                    </p>
+                  </div>
+
+                  {newIntegration.provider === "gitlab" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="int-url">GitLab URL (optional, for self-hosted)</Label>
+                      <Input
+                        id="int-url"
+                        placeholder="https://gitlab.company.com"
+                        value={newIntegration.base_url}
+                        onChange={(e) => setNewIntegration({ ...newIntegration, base_url: e.target.value })}
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-4">
+                    <Button variant="outline" className="flex-1" onClick={() => setShowConnectModal(false)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      className="flex-1"
+                      onClick={connectGitProvider}
+                      disabled={connectingProvider}
+                    >
+                      {connectingProvider ? "Connecting..." : "Connect"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          <Separator />
+
+          {/* Connected Repositories */}
+          <div className="space-y-4">
+            <div className="font-semibold text-sm text-muted-foreground">Connected Repositories</div>
+
+            {connectedRepos.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No repositories connected. Use the "Repos" button above to browse and add repositories.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {connectedRepos.map((repo, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <GitBranch className="h-4 w-4 text-muted-foreground" />
+                      <div>
+                        <div className="font-medium">{repo.full_name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {repo.default_branch} • {repo.private ? "Private" : "Public"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={repo.clone_url.replace('.git', '')} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </Button>
+                      <Button variant="destructive" size="sm" onClick={() => removeRepository(repo.repo_id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Remote Repositories Browser */}
+          {remoteRepos.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold text-sm text-muted-foreground">Available Repositories</div>
+                  <Button variant="ghost" size="sm" onClick={() => setRemoteRepos([])}>
+                    <XCircle className="h-4 w-4 mr-1" /> Close
+                  </Button>
+                </div>
+                <div className="max-h-64 overflow-y-auto space-y-2">
+                  {remoteRepos.map((repo, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50">
+                      <div>
+                        <div className="font-medium">{repo.full_name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {repo.language || "Unknown"} • {repo.private ? "Private" : "Public"}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => addRepository(
+                          gitIntegrations[0]?.provider || "github",
+                          `https://github.com/${repo.full_name}`
+                        )}
+                        disabled={connectedRepos.some(r => r.full_name === repo.full_name)}
+                      >
+                        {connectedRepos.some(r => r.full_name === repo.full_name) ? (
+                          <CheckCircle className="h-4 w-4" />
+                        ) : (
+                          <>
+                            <Plus className="h-4 w-4 mr-1" /> Add
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -1501,6 +2559,10 @@ const Layout = ({ children }) => {
               <Link to="/add-repository" className="text-sm font-medium hover:text-primary transition-colors" data-testid="nav-add-repo">
                 Add Repository
               </Link>
+              <a href="/help.html" target="_blank" rel="noopener noreferrer" className="text-sm font-medium hover:text-primary transition-colors flex items-center gap-1" data-testid="nav-help">
+                <HelpCircle className="h-5 w-5" />
+                Help
+              </a>
               <Link to="/settings" className="text-sm font-medium hover:text-primary transition-colors" data-testid="nav-settings">
                 <Settings className="h-5 w-5" />
               </Link>

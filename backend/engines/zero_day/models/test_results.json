@@ -1,0 +1,55 @@
+{
+  "overall": {
+    "precision": 0.24957264957264957,
+    "recall": 0.28,
+    "f1": 0.26026315789473686,
+    "micro_f1": 0.9174311926605505,
+    "auc": NaN,
+    "avg_precision": 0.28
+  },
+  "per_class": {
+    "sql_injection": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 8
+    },
+    "command_injection": {
+      "precision": 0.7777777777777778,
+      "recall": 1.0,
+      "f1": 0.875,
+      "support": 7
+    },
+    "path_traversal": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 10
+    },
+    "xss": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 9
+    },
+    "unsafe_deserialization": {
+      "precision": 0.46153846153846156,
+      "recall": 1.0,
+      "f1": 0.631578947368421,
+      "support": 6
+    },
+    "weak_crypto": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 7
+    },
+    "hardcoded_secrets": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 3
+    }
+  },
+  "threshold": 0.5
+}

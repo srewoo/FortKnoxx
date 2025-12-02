@@ -65,18 +65,28 @@ class GrypeScanner:
             )
 
             if result.returncode == 0 or result.returncode == 1:  # 1 means vulnerabilities found
-                data = json.loads(result.stdout)
-                vulnerabilities = self._parse_results(data)
-                logger.info(f"Grype found {len(vulnerabilities)} vulnerabilities")
-                return vulnerabilities
+                if not result.stdout or result.stdout.strip() == "":
+                    logger.info("Grype found 0 vulnerabilities (empty output)")
+                    return []
 
+                try:
+                    data = json.loads(result.stdout)
+                    vulnerabilities = self._parse_results(data)
+                    logger.info(f"Grype found {len(vulnerabilities)} vulnerabilities")
+                    return vulnerabilities
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse Grype JSON output: {str(e)[:100]}")
+                    logger.debug(f"Grype stdout: {result.stdout[:500]}")
+                    return []
+
+            logger.warning(f"Grype returned unexpected exit code: {result.returncode}")
             return []
 
         except subprocess.TimeoutExpired:
             logger.error("Grype scan timed out")
             return []
-        except json.JSONDecodeError:
-            logger.error("Failed to parse Grype output")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Grype output: {str(e)}")
             return []
         except Exception as e:
             logger.error(f"Grype scan error: {str(e)}")

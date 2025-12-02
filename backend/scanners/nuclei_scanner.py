@@ -50,7 +50,7 @@ async def scan(repo_path: str) -> List[Dict]:
             "-target", repo_path,
             "-tags", "config,exposure,misconfiguration",
             "-severity", "critical,high,medium",
-            "-json",
+            "-jsonl",  # Changed from -json to -jsonl (new format)
             "-silent",
         ]
 

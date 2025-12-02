@@ -12,8 +12,11 @@ from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
+# Store token for use across functions
+_snyk_token = None
 
-async def scan(repo_path: str) -> List[Dict]:
+
+async def scan(repo_path: str, snyk_token: str = None) -> List[Dict]:
     """
     Run Snyk CLI scanner for dependency vulnerabilities
 
@@ -22,12 +25,30 @@ async def scan(repo_path: str) -> List[Dict]:
     - Fix recommendations with upgrade paths
     - License compliance checking
     - Container scanning
+
+    Args:
+        repo_path: Path to repository
+        snyk_token: Snyk API token for authentication
     """
+    global _snyk_token
     try:
         # Check if snyk is installed
         if not _is_snyk_installed():
             logger.warning("Snyk CLI not found, skipping scan. Install: npm install -g snyk")
             return []
+
+        # Store token for use in scan functions
+        _snyk_token = snyk_token
+
+        # Authenticate if token provided
+        if snyk_token:
+            authenticated = _authenticate_snyk(snyk_token)
+            if authenticated:
+                logger.info("Snyk authenticated successfully")
+            else:
+                logger.warning("Snyk authentication failed, scanning may be limited")
+        else:
+            logger.warning("No Snyk token provided, scanning may be limited")
 
         issues = []
 
@@ -36,8 +57,9 @@ async def scan(repo_path: str) -> List[Dict]:
         issues.extend(dep_issues)
 
         # Scan code for security issues (if authenticated)
-        code_issues = await _scan_code(repo_path)
-        issues.extend(code_issues)
+        if snyk_token:
+            code_issues = await _scan_code(repo_path)
+            issues.extend(code_issues)
 
         logger.info(f"Snyk found {len(issues)} vulnerabilities")
         return issues
@@ -61,6 +83,42 @@ def _is_snyk_installed() -> bool:
         return False
 
 
+def _authenticate_snyk(token: str) -> bool:
+    """
+    Authenticate Snyk CLI with token
+
+    Args:
+        token: Snyk API token
+
+    Returns:
+        True if authentication successful
+    """
+    try:
+        # Set environment variable for Snyk authentication
+        env = os.environ.copy()
+        env['SNYK_TOKEN'] = token
+
+        # Authenticate using snyk auth command
+        result = subprocess.run(
+            ["snyk", "auth", token],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env
+        )
+
+        if result.returncode == 0:
+            logger.info("Snyk authentication successful")
+            return True
+        else:
+            logger.error(f"Snyk authentication failed: {result.stderr}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Snyk authentication error: {str(e)}")
+        return False
+
+
 async def _scan_dependencies(repo_path: str) -> List[Dict]:
     """Scan dependencies for known vulnerabilities"""
     issues = []
@@ -73,12 +131,18 @@ async def _scan_dependencies(repo_path: str) -> List[Dict]:
             "--detection-depth=4"
         ]
 
+        # Prepare environment with token if available
+        env = os.environ.copy()
+        if _snyk_token:
+            env['SNYK_TOKEN'] = _snyk_token
+
         result = subprocess.run(
             cmd,
             cwd=repo_path,
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300,
+            env=env
         )
 
         if not result.stdout:
@@ -115,12 +179,18 @@ async def _scan_code(repo_path: str) -> List[Dict]:
             "--json"
         ]
 
+        # Prepare environment with token if available
+        env = os.environ.copy()
+        if _snyk_token:
+            env['SNYK_TOKEN'] = _snyk_token
+
         result = subprocess.run(
             cmd,
             cwd=repo_path,
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300,
+            env=env
         )
 
         if not result.stdout:

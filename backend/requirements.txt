@@ -174,6 +174,42 @@ xenon>=0.9.0
 anthropic>=0.18.0
 
 # ============================================
+# PHASE 1: AUTHENTICATION & SECURITY
+# ============================================
+# JWT and authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Redis for job queue (optional)
+redis>=5.0.0
+
+# ============================================
+# PHASES 2-6: SECURITY ENGINES
+# ============================================
+# No additional dependencies needed - uses stdlib and existing packages
+
+# ============================================
+# PHASE 1: ML/AI ENHANCEMENTS - GNN & CodeBERT
+# ============================================
+# PyTorch for deep learning
+torch>=2.0.0
+
+# PyTorch Geometric for Graph Neural Networks
+torch-geometric>=2.3.0
+
+# NetworkX for graph operations
+networkx>=3.0
+
+# Transformers for CodeBERT
+transformers>=4.30.0
+
+# Scikit-learn for ML utilities
+scikit-learn>=1.3.0
+
+# SHAP for explainable AI (optional)
+# shap>=0.42.0
+
+# ============================================
 # ADDITIONAL UTILITIES
 # ============================================
 # SARIF output support
@@ -197,3 +233,12 @@ pydeps>=1.12.0
 
 # Additional security tools
 # Note: OWASP ZAP and Nuclei are binary tools, installed separately
+
+# ============================================
+# PDF REPORT GENERATION
+# ============================================
+# ReportLab - Professional PDF generation
+reportlab>=4.0.0
+
+# Matplotlib - Charts and graphs for reports (optional, enhances PDFs)
+matplotlib>=3.8.0

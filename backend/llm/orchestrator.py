@@ -18,20 +18,52 @@ class LLMOrchestrator:
     Supports: OpenAI, Anthropic (Claude), Google Gemini
     """
 
-    def __init__(self, db=None):
-        """Initialize with API keys from environment or database"""
+    def __init__(self, db=None, settings_manager=None):
+        """Initialize with API keys from settings manager, environment, or database"""
         self.db = db
-        self.openai_key = os.getenv("OPENAI_API_KEY")
-        self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        self.gemini_key = os.getenv("GEMINI_API_KEY")
+        self.settings_manager = settings_manager
+        self.openai_key = None
+        self.anthropic_key = None
+        self.gemini_key = None
 
         # Lazy-load clients
         self._openai_client = None
         self._anthropic_client = None
         self._gemini_client = None
+        self._keys_loaded = False
+
+    async def _load_keys(self):
+        """Load API keys from settings manager, environment, or database"""
+        if self._keys_loaded:
+            return
+
+        # Priority 1: Settings Manager (database with encryption)
+        if self.settings_manager:
+            try:
+                keys = await self.settings_manager.get_api_keys()
+                self.openai_key = keys.get("openai_api_key")
+                self.anthropic_key = keys.get("anthropic_api_key")
+                self.gemini_key = keys.get("gemini_api_key")
+                logger.info("Loaded API keys from settings manager")
+            except Exception as e:
+                logger.warning(f"Failed to load API keys from settings manager: {e}")
+
+        # Priority 2: Environment variables (backwards compatibility)
+        if not self.openai_key:
+            self.openai_key = os.getenv("OPENAI_API_KEY")
+        if not self.anthropic_key:
+            self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if not self.gemini_key:
+            self.gemini_key = os.getenv("GEMINI_API_KEY")
+
+        # Priority 3: Legacy database settings
+        if self.db and (not self.openai_key or not self.anthropic_key or not self.gemini_key):
+            await self._load_keys_from_db()
+
+        self._keys_loaded = True
 
     async def _load_keys_from_db(self):
-        """Load API keys from database if not in environment"""
+        """Load API keys from database if not in environment (legacy)"""
         if self.db is None:
             return
 
@@ -135,8 +167,8 @@ class LLMOrchestrator:
         Returns:
             Generated text response
         """
-        # Load API keys from database if not in environment
-        await self._load_keys_from_db()
+        # Load API keys from settings manager, environment, or database
+        await self._load_keys()
 
         provider = provider.lower()
 
@@ -313,7 +345,7 @@ Format your response in markdown."""
             messages=messages,
             system_message=system_message,
             temperature=0.3,
-            max_tokens=5000
+            max_tokens=10000
         )
 
     def get_available_models(self, provider: str) -> Dict[str, list]:

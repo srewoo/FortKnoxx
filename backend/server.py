@@ -1,10 +1,14 @@
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+# Load environment variables FIRST before any other imports
+from pathlib import Path
 from dotenv import load_dotenv
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 import uuid
@@ -25,10 +29,13 @@ from scanners import nuclei_scanner
 # Import enhanced scanners (High Value Additions)
 from scanners import snyk_scanner
 from scanners import gosec_scanner
-from scanners import cargo_audit_scanner
+# DISABLED: Rust-specific, not needed for most projects
+# from scanners import cargo_audit_scanner
 from scanners import spotbugs_scanner
 from scanners import pyre_scanner
-from scanners import zap_scanner
+from scanners import zap_scanner  # Static web security scanner
+from scanners import zap_dast_scanner  # Dynamic DAST scanner (Docker-based)
+from scanners import api_fuzzer_scanner  # Dedicated API security fuzzer
 from scanners import horusec_scanner
 
 # Import quality scanners
@@ -54,8 +61,49 @@ from utils.false_positive_filter import filter_false_positives, get_filter_stats
 # Import LLM orchestrator
 from llm.orchestrator import LLMOrchestrator
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# Import AI-powered security engines (with graceful fallback for ML components)
+ML_DETECTOR_AVAILABLE = False
+FLOW_ANALYZER_AVAILABLE = False
+ML_COMPONENTS_AVAILABLE = False
+
+try:
+    from engines.zero_day.ml_detector import MLAnomalyDetector
+    ML_DETECTOR_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Zero-Day ML Detector not available: {e}")
+    MLAnomalyDetector = None
+
+try:
+    from engines.logic.flow_analyzer import FlowAnalyzer
+    from engines.logic.rule_engine import LogicRuleEngine
+    FLOW_ANALYZER_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Business Logic Analyzer not available: {e}")
+    FlowAnalyzer = None
+    LogicRuleEngine = None
+
+# These don't require numpy/ML dependencies
+from engines.llm_security.surface_discovery import LLMSurfaceDiscovery
+from engines.llm_security.payload_generator import AdversarialPayloadGenerator
+from engines.llm_security.adversarial_tester import AdversarialTester
+from engines.auth_scanner.static_analyzer import AuthStaticAnalyzer
+
+ML_COMPONENTS_AVAILABLE = ML_DETECTOR_AVAILABLE or FLOW_ANALYZER_AVAILABLE
+if not ML_COMPONENTS_AVAILABLE:
+    print("⚠️  ML/AI components unavailable. Core security scanners will still function normally.")
+
+# Import settings manager
+from settings.manager import settings_manager
+from settings.git_integration import git_integration_service
+from settings.models import (
+    UpdateAPIKeysRequest, SettingsResponse, GitProvider,
+    ConnectGitIntegrationRequest, AddRepositoryRequest, GitIntegrationStatus,
+    UpdateAIScannerSettingsRequest, AIScannerSettings,
+    ScannerSettings, UpdateScannerSettingsRequest
+)
+from secrets_vault.encryption import encryption_service
+
+# NOTE: ROOT_DIR and load_dotenv already called at top of file (lines 1-5)
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -64,9 +112,61 @@ db = client[os.environ['DB_NAME']]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Nothing needed
+    # Startup: Initialize settings manager
+    settings_manager.set_db(db)
+    settings_manager.set_encryption(encryption_service)
+    logger.info("Settings manager initialized")
+
+    # Initialize Git integration service
+    git_integration_service.set_db(db)
+    git_integration_service.set_encryption(encryption_service)
+    logger.info("Git integration service initialized")
+
+    # Initialize GNN Model Manager (loads pre-trained model, does NOT train on startup)
+    model_manager = None
+    update_service = None
+    try:
+        from engines.zero_day.model_manager import get_model_manager, ModelManagerConfig
+        model_config = ModelManagerConfig(
+            enable_background_finetune=False,  # Disabled by default - opt-in only
+            finetune_at_startup=False,  # Never train on startup
+            collect_feedback=True,  # Collect feedback for future improvements
+        )
+        model_manager = await get_model_manager(model_config)
+        await model_manager.initialize()
+        logger.info(f"GNN Model Manager initialized: {model_manager.get_status()}")
+
+        # Initialize Model Update Service (checks for new model versions periodically)
+        from engines.zero_day.model_updater import get_update_service, UpdateConfig, UpdateSource
+        update_config = UpdateConfig(
+            enabled=os.environ.get('MODEL_UPDATE_ENABLED', 'false').lower() == 'true',
+            source=UpdateSource.HTTP,
+            source_url=os.environ.get('MODEL_UPDATE_URL', ''),
+            check_interval_hours=int(os.environ.get('MODEL_UPDATE_INTERVAL_HOURS', '24')),
+            notify_on_update=True,
+            webhook_url=os.environ.get('MODEL_UPDATE_WEBHOOK', None),
+        )
+        update_service = await get_update_service(update_config)
+
+        # Register callback to reload model after update
+        async def on_model_updated(version):
+            logger.info(f"Model updated to version {version.version}, reloading...")
+            await model_manager.initialize()
+
+        update_service.on_update(on_model_updated)
+
+        # Start background update scheduler
+        await update_service.start()
+        logger.info(f"Model Update Service initialized: {update_service.get_status()}")
+
+    except Exception as e:
+        logger.warning(f"GNN Model Manager initialization skipped: {e}")
+
     yield
-    # Shutdown: Close MongoDB connection
+
+    # Shutdown: Stop update service and close MongoDB connection
+    if update_service:
+        await update_service.stop()
     client.close()
 
 # Create the main app without a prefix
@@ -102,7 +202,7 @@ class Repository(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     url: str
-    access_token: str
+    access_token: Optional[str] = None  # Optional - Git Integration repos use integration token
     branch: str = "main"
     last_scan: Optional[str] = None
     scan_status: str = "pending"
@@ -112,6 +212,9 @@ class Repository(BaseModel):
     vulnerabilities_count: int = 0
     critical_count: int = 0
     high_count: int = 0
+    # Git Integration fields
+    provider: Optional[str] = None
+    full_name: Optional[str] = None
 
 class RepositoryCreate(BaseModel):
     name: str
@@ -132,7 +235,7 @@ class Vulnerability(BaseModel):
     owasp_category: str
     title: str
     description: str
-    code_snippet: str
+    code_snippet: Optional[str] = ""
     cwe: Optional[str] = None
     cvss_score: Optional[float] = None
     fix_recommendation: Optional[str] = None
@@ -169,10 +272,7 @@ class ReportRequest(BaseModel):
     scan_id: str
     format: str = "json"
 
-class APIKeysUpdate(BaseModel):
-    openai_key: Optional[str] = None
-    anthropic_key: Optional[str] = None
-    gemini_key: Optional[str] = None
+# NOTE: APIKeysUpdate removed - duplicate of UpdateAPIKeysRequest from settings.models
 
 # Utility Functions
 async def clone_repository(repo_url: str, token: str, branch: str, repo_id: str) -> Optional[str]:
@@ -478,12 +578,40 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             {"id": scan_id},
             {"$set": {"status": "scanning"}}
         )
-        
-        # Run all scanners
-        semgrep_results = await run_semgrep_scan(repo_path)
-        gitleaks_results = await run_gitleaks_scan(repo_path)
-        trivy_results = await run_trivy_scan(repo_path)
-        checkov_results = await run_checkov_scan(repo_path)
+
+        # Load scanner settings
+        logger.info("Loading scanner settings...")
+        scanner_settings = await settings_manager.get_scanner_settings()
+        logger.info(f"Scanner settings loaded: {scanner_settings.model_dump()}")
+
+        # Run all scanners (conditionally based on settings)
+        semgrep_results = []
+        if scanner_settings.enable_semgrep:
+            semgrep_results = await run_semgrep_scan(repo_path)
+            logger.info(f"Semgrep scan completed: {len(semgrep_results)} issues found")
+        else:
+            logger.info("Semgrep: Disabled in settings")
+
+        gitleaks_results = []
+        if scanner_settings.enable_gitleaks:
+            gitleaks_results = await run_gitleaks_scan(repo_path)
+            logger.info(f"Gitleaks scan completed: {len(gitleaks_results)} secrets found")
+        else:
+            logger.info("Gitleaks: Disabled in settings")
+
+        trivy_results = []
+        if scanner_settings.enable_trivy:
+            trivy_results = await run_trivy_scan(repo_path)
+            logger.info(f"Trivy scan completed: {len(trivy_results)} vulnerabilities found")
+        else:
+            logger.info("Trivy: Disabled in settings")
+
+        checkov_results = []
+        if scanner_settings.enable_checkov:
+            checkov_results = await run_checkov_scan(repo_path)
+            logger.info(f"Checkov scan completed: {len(checkov_results)} IaC issues found")
+        else:
+            logger.info("Checkov: Disabled in settings")
 
         # Run new free security scanners
         bandit_scanner = BanditScanner()
@@ -496,25 +624,33 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         grype_results = []
         eslint_results = []
 
-        # Run Bandit if available (Python security)
-        if await bandit_scanner.is_available():
+        # Run Bandit if enabled and available (Python security)
+        if scanner_settings.enable_bandit and await bandit_scanner.is_available():
             bandit_results = await bandit_scanner.scan(repo_path)
             logger.info(f"Bandit scan completed: {len(bandit_results)} issues found")
+        elif not scanner_settings.enable_bandit:
+            logger.info("Bandit: Disabled in settings")
 
-        # Run TruffleHog if available (secret detection)
-        if await trufflehog_scanner.is_available():
+        # Run TruffleHog if enabled and available (secret detection)
+        if scanner_settings.enable_trufflehog and await trufflehog_scanner.is_available():
             trufflehog_results = await trufflehog_scanner.scan(repo_path, scan_history=True)
             logger.info(f"TruffleHog scan completed: {len(trufflehog_results)} secrets found")
+        elif not scanner_settings.enable_trufflehog:
+            logger.info("TruffleHog: Disabled in settings")
 
-        # Run Grype if available (dependency vulnerabilities)
-        if await grype_scanner.is_available():
+        # Run Grype if enabled and available (dependency vulnerabilities)
+        if scanner_settings.enable_grype and await grype_scanner.is_available():
             grype_results = await grype_scanner.scan(repo_path)
             logger.info(f"Grype scan completed: {len(grype_results)} vulnerabilities found")
+        elif not scanner_settings.enable_grype:
+            logger.info("Grype: Disabled in settings")
 
-        # Run ESLint if available (JavaScript/TypeScript security)
-        if await eslint_scanner.is_available():
+        # Run ESLint if enabled and available (JavaScript/TypeScript security)
+        if scanner_settings.enable_eslint and await eslint_scanner.is_available():
             eslint_results = await eslint_scanner.scan(repo_path)
             logger.info(f"ESLint scan completed: {len(eslint_results)} issues found")
+        elif not scanner_settings.enable_eslint:
+            logger.info("ESLint: Disabled in settings")
 
         # Initialize quality scanners
         pylint_scanner = PylintScanner()
@@ -540,72 +676,228 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         npm_audit_results = []
         syft_results = []
 
-        # Run quality scanners
-        if await pylint_scanner.is_available():
+        # Run quality scanners (if enabled)
+        if scanner_settings.enable_pylint and await pylint_scanner.is_available():
             pylint_results = await pylint_scanner.scan(repo_path)
             logger.info(f"Pylint scan completed: {len(pylint_results)} issues found")
+        elif not scanner_settings.enable_pylint:
+            logger.info("Pylint: Disabled in settings")
 
-        if await flake8_scanner.is_available():
+        if scanner_settings.enable_flake8 and await flake8_scanner.is_available():
             flake8_results = await flake8_scanner.scan(repo_path)
             logger.info(f"Flake8 scan completed: {len(flake8_results)} issues found")
+        elif not scanner_settings.enable_flake8:
+            logger.info("Flake8: Disabled in settings")
 
-        if await radon_scanner.is_available():
+        if scanner_settings.enable_radon and await radon_scanner.is_available():
             radon_results = await radon_scanner.scan(repo_path)
             logger.info(f"Radon scan completed: {len(radon_results)} complexity issues found")
+        elif not scanner_settings.enable_radon:
+            logger.info("Radon: Disabled in settings")
 
-        if await shellcheck_scanner.is_available():
+        if scanner_settings.enable_shellcheck and await shellcheck_scanner.is_available():
             shellcheck_results = await shellcheck_scanner.scan(repo_path)
             logger.info(f"ShellCheck scan completed: {len(shellcheck_results)} issues found")
+        elif not scanner_settings.enable_shellcheck:
+            logger.info("ShellCheck: Disabled in settings")
 
-        if await hadolint_scanner.is_available():
+        if scanner_settings.enable_hadolint and await hadolint_scanner.is_available():
             hadolint_results = await hadolint_scanner.scan(repo_path)
             logger.info(f"Hadolint scan completed: {len(hadolint_results)} Dockerfile issues found")
+        elif not scanner_settings.enable_hadolint:
+            logger.info("Hadolint: Disabled in settings")
 
         # Run enhanced quality scanners
-        sqlfluff_results = await sqlfluff_scanner.scan(repo_path)
-        logger.info(f"SQLFluff scan completed: {len(sqlfluff_results)} SQL issues found")
+        sqlfluff_results = []
+        if scanner_settings.enable_sqlfluff:
+            sqlfluff_results = await sqlfluff_scanner.scan(repo_path)
+            logger.info(f"SQLFluff scan completed: {len(sqlfluff_results)} SQL issues found")
+        else:
+            logger.info("SQLFluff: Disabled in settings")
 
-        pydeps_results = await pydeps_scanner.scan(repo_path)
-        logger.info(f"pydeps scan completed: {len(pydeps_results)} architecture issues found")
+        pydeps_results = []
+        if scanner_settings.enable_pydeps:
+            pydeps_results = await pydeps_scanner.scan(repo_path)
+            logger.info(f"pydeps scan completed: {len(pydeps_results)} architecture issues found")
+        else:
+            logger.info("pydeps: Disabled in settings")
 
         # Run Nuclei for configuration and template-based scanning
-        nuclei_results = await nuclei_scanner.scan(repo_path)
-        logger.info(f"Nuclei scan completed: {len(nuclei_results)} configuration issues found")
+        nuclei_results = []
+        if scanner_settings.enable_nuclei:
+            nuclei_results = await nuclei_scanner.scan(repo_path)
+            logger.info(f"Nuclei scan completed: {len(nuclei_results)} configuration issues found")
+        else:
+            logger.info("Nuclei: Disabled in settings")
 
         # Run enhanced security scanners (High Value Additions)
-        snyk_results = await snyk_scanner.scan(repo_path)
-        logger.info(f"Snyk scan completed: {len(snyk_results)} dependency/code issues found")
+        # Get Snyk token from settings
+        api_keys = await settings_manager.get_api_keys()
+        snyk_token = api_keys.get("snyk_token")
 
-        gosec_results = await gosec_scanner.scan(repo_path)
-        logger.info(f"Gosec scan completed: {len(gosec_results)} Go security issues found")
+        snyk_results = []
+        if scanner_settings.enable_snyk:
+            snyk_results = await snyk_scanner.scan(repo_path, snyk_token=snyk_token)
+            logger.info(f"Snyk scan completed: {len(snyk_results)} dependency/code issues found")
+        else:
+            logger.info("Snyk: Disabled in settings")
 
-        cargo_audit_results = await cargo_audit_scanner.scan(repo_path)
-        logger.info(f"cargo-audit scan completed: {len(cargo_audit_results)} Rust issues found")
+        gosec_results = []
+        if scanner_settings.enable_gosec:
+            gosec_results = await gosec_scanner.scan(repo_path)
+            logger.info(f"Gosec scan completed: {len(gosec_results)} Go security issues found")
+        else:
+            logger.info("Gosec: Disabled in settings")
 
-        spotbugs_results = await spotbugs_scanner.scan(repo_path)
-        logger.info(f"SpotBugs scan completed: {len(spotbugs_results)} Java issues found")
+        # DISABLED: cargo-audit (Rust-specific, not installed)
+        cargo_audit_results = []
+        # cargo_audit_results = await cargo_audit_scanner.scan(repo_path)
+        # logger.info(f"cargo-audit scan completed: {len(cargo_audit_results)} Rust issues found")
 
-        pyre_results = await pyre_scanner.scan(repo_path)
-        logger.info(f"Pyre scan completed: {len(pyre_results)} Python type issues found")
+        spotbugs_results = []
+        if scanner_settings.enable_spotbugs:
+            spotbugs_results = await spotbugs_scanner.scan(repo_path)
+            logger.info(f"SpotBugs scan completed: {len(spotbugs_results)} Java issues found")
+        else:
+            logger.info("SpotBugs: Disabled in settings")
 
-        zap_results = await zap_scanner.scan(repo_path)
-        logger.info(f"ZAP scan completed: {len(zap_results)} web security issues found")
+        pyre_results = []
+        if scanner_settings.enable_pyre:
+            pyre_results = await pyre_scanner.scan(repo_path)
+            logger.info(f"Pyre scan completed: {len(pyre_results)} Python type issues found")
+        else:
+            logger.info("Pyre: Disabled in settings")
 
-        horusec_results = await horusec_scanner.scan(repo_path)
-        logger.info(f"Horusec scan completed: {len(horusec_results)} multi-language issues found")
+        # ZAP Static Scanner (web security patterns)
+        zap_results = []
+        if scanner_settings.enable_zap:
+            zap_results = await zap_scanner.scan(repo_path)
+            logger.info(f"ZAP static scan completed: {len(zap_results)} web security issues found")
+        else:
+            logger.info("ZAP: Disabled in settings")
 
-        # Run compliance scanners
-        if await pip_audit_scanner.is_available():
+        # API Fuzzer Scanner (dedicated API security testing)
+        api_fuzzer_results = []
+        if scanner_settings.enable_api_fuzzer:
+            api_fuzzer_results = await api_fuzzer_scanner.scan(repo_path)
+            logger.info(f"API Fuzzer scan completed: {len(api_fuzzer_results)} API issues found")
+        else:
+            logger.info("API Fuzzer: Disabled in settings")
+
+        horusec_results = []
+        if scanner_settings.enable_horusec:
+            horusec_results = await horusec_scanner.scan(repo_path)
+            logger.info(f"Horusec scan completed: {len(horusec_results)} multi-language issues found")
+        else:
+            logger.info("Horusec: Disabled in settings")
+
+        # Run compliance scanners (if enabled)
+        if scanner_settings.enable_pip_audit and await pip_audit_scanner.is_available():
             pip_audit_results = await pip_audit_scanner.scan(repo_path)
             logger.info(f"pip-audit scan completed: {len(pip_audit_results)} vulnerabilities found")
+        elif not scanner_settings.enable_pip_audit:
+            logger.info("pip-audit: Disabled in settings")
 
-        if await npm_audit_scanner.is_available():
+        if scanner_settings.enable_npm_audit and await npm_audit_scanner.is_available():
             npm_audit_results = await npm_audit_scanner.scan(repo_path)
             logger.info(f"npm-audit scan completed: {len(npm_audit_results)} vulnerabilities found")
+        elif not scanner_settings.enable_npm_audit:
+            logger.info("npm-audit: Disabled in settings")
 
-        if await syft_scanner.is_available():
+        if scanner_settings.enable_syft and await syft_scanner.is_available():
             syft_results = await syft_scanner.scan(repo_path)
             logger.info(f"Syft scan completed: {len(syft_results)} license issues found")
+        elif not scanner_settings.enable_syft:
+            logger.info("Syft: Disabled in settings")
+
+        # ===== AI-POWERED SECURITY ENGINES =====
+        logger.info("Starting AI-powered security analysis...")
+
+        # 1. Zero-Day Detection (ML Anomaly Detector)
+        zero_day_results = []
+        if scanner_settings.enable_zero_day_detector:
+            if ML_DETECTOR_AVAILABLE and MLAnomalyDetector is not None:
+                try:
+                    ml_detector = MLAnomalyDetector()
+                    zero_day_anomalies = await ml_detector.analyze_repository(repo_path)
+                    zero_day_results = zero_day_anomalies
+                    logger.info(f"Zero-Day Detector completed: {len(zero_day_results)} anomalies found")
+                except Exception as e:
+                    logger.error(f"Zero-Day Detector failed: {str(e)}")
+            else:
+                logger.warning("Zero-Day Detector: ML components not available (PyTorch/NumPy issue). Scanner skipped.")
+        else:
+            logger.info("Zero-Day Detector: Disabled in settings")
+
+        # 2. Business Logic Scanner
+        business_logic_results = []
+        if scanner_settings.enable_business_logic_scanner:
+            if FLOW_ANALYZER_AVAILABLE and FlowAnalyzer is not None:
+                try:
+                    flow_analyzer = FlowAnalyzer()
+                    flow_graph = await flow_analyzer.analyze_repository(repo_path)
+
+                    logic_engine = LogicRuleEngine()
+                    logic_violations = await logic_engine.analyze_flow_graph(flow_graph, repo_path)
+                    business_logic_results = logic_violations
+                    logger.info(f"Business Logic Scanner completed: {len(business_logic_results)} violations found")
+                except Exception as e:
+                    logger.error(f"Business Logic Scanner failed: {str(e)}")
+            else:
+                logger.warning("Business Logic Scanner: ML components not available (NumPy issue). Scanner skipped.")
+        else:
+            logger.info("Business Logic Scanner: Disabled in settings")
+
+        # 3. LLM Security Scanner
+        llm_security_results = []
+        if scanner_settings.enable_llm_security_scanner:
+            try:
+                # Get LLM API keys from settings for testing
+                llm_api_keys = await settings_manager.get_api_keys()
+
+                # Only run LLM security scanner if API keys are configured
+                if llm_api_keys.get("openai_api_key") or llm_api_keys.get("anthropic_api_key") or llm_api_keys.get("gemini_api_key"):
+                    llm_discovery = LLMSurfaceDiscovery()
+                    llm_endpoints = await llm_discovery.discover_llm_usage(repo_path)
+
+                    if llm_endpoints:
+                        payload_gen = AdversarialPayloadGenerator()
+                        payloads = await payload_gen.generate_payloads()
+
+                        # Convert API keys to format expected by tester
+                        api_keys_dict = {}
+                        if llm_api_keys.get("openai_api_key"):
+                            api_keys_dict["openai"] = llm_api_keys["openai_api_key"]
+                        if llm_api_keys.get("anthropic_api_key"):
+                            api_keys_dict["anthropic"] = llm_api_keys["anthropic_api_key"]
+                        if llm_api_keys.get("gemini_api_key"):
+                            api_keys_dict["gemini"] = llm_api_keys["gemini_api_key"]
+
+                        tester = AdversarialTester(api_keys=api_keys_dict)
+                        llm_vulns = await tester.test_endpoints(llm_endpoints, payloads, sample_size=10)
+                        llm_security_results = llm_vulns
+                        logger.info(f"LLM Security Scanner completed: {len(llm_security_results)} vulnerabilities found")
+                    else:
+                        logger.info("LLM Security Scanner: No LLM endpoints detected")
+                else:
+                    logger.info("LLM Security Scanner: Skipped (no API keys configured)")
+            except Exception as e:
+                logger.error(f"LLM Security Scanner failed: {str(e)}")
+        else:
+            logger.info("LLM Security Scanner: Disabled in settings")
+
+        # 4. Authentication & Authorization Scanner
+        auth_scanner_results = []
+        if scanner_settings.enable_auth_scanner:
+            try:
+                auth_analyzer = AuthStaticAnalyzer()
+                auth_vulns = await auth_analyzer.analyze_repository(repo_path)
+                auth_scanner_results = auth_vulns
+                logger.info(f"Auth Scanner completed: {len(auth_scanner_results)} vulnerabilities found")
+            except Exception as e:
+                logger.error(f"Auth Scanner failed: {str(e)}")
+        else:
+            logger.info("Auth Scanner: Disabled in settings")
 
         vulnerabilities = []
         quality_issues = []
@@ -776,7 +1068,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         # Process enhanced scanner results (High Value Additions)
         enhanced_security_results = (
             snyk_results + gosec_results + cargo_audit_results +
-            spotbugs_results + pyre_results + zap_results + horusec_results
+            spotbugs_results + pyre_results + zap_results + api_fuzzer_results + horusec_results
         )
         for finding in enhanced_security_results:
             vuln_dict = {
@@ -814,6 +1106,88 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 "issue_type": "compliance"
             }
             compliance_issues.append(compliance_dict)
+
+        # ===== PROCESS AI-POWERED SCANNER RESULTS =====
+
+        # Process Zero-Day Detector results (ML Anomaly Detection)
+        for anomaly in zero_day_results:
+            vuln = Vulnerability(
+                repo_id=repo_id,
+                scan_id=scan_id,
+                file_path=anomaly.file_path,
+                line_start=anomaly.line_number,
+                line_end=anomaly.line_number,
+                severity=anomaly.severity,
+                category=f"zero-day-{anomaly.type}",
+                owasp_category=map_to_owasp(anomaly.type, anomaly.description, ""),
+                title=anomaly.title,
+                description=f"{anomaly.description}\n\nAnomaly Score: {anomaly.anomaly_score:.2f}\nConfidence: {anomaly.confidence:.2f}",
+                code_snippet=anomaly.code_snippet,
+                detected_by="Zero-Day Detector (AI)"
+            )
+            vulnerabilities.append(vuln.model_dump())
+            severity_counts[anomaly.severity] = severity_counts.get(anomaly.severity, 0) + 1
+
+        # Process Business Logic Scanner results
+        for violation in business_logic_results:
+            vuln = Vulnerability(
+                repo_id=repo_id,
+                scan_id=scan_id,
+                file_path=violation.file_path,
+                line_start=violation.line_number,
+                line_end=violation.line_number,
+                severity=violation.severity,
+                category=f"business-logic-{violation.type}",
+                owasp_category=map_to_owasp(violation.type, violation.description, ""),
+                title=violation.title,
+                description=f"{violation.description}\n\n**Attack Scenario:**\n{violation.attack_scenario}\n\n**Recommendation:**\n{violation.recommendation}",
+                code_snippet=violation.proof_of_concept or f"Endpoint: {violation.endpoint}",
+                detected_by="Business Logic Scanner (AI)"
+            )
+            vulnerabilities.append(vuln.model_dump())
+            severity_counts[violation.severity] = severity_counts.get(violation.severity, 0) + 1
+
+        # Process LLM Security Scanner results
+        for llm_vuln in llm_security_results:
+            vuln = Vulnerability(
+                repo_id=repo_id,
+                scan_id=scan_id,
+                file_path=llm_vuln.endpoint_file,
+                line_start=llm_vuln.endpoint_line,
+                line_end=llm_vuln.endpoint_line,
+                severity=llm_vuln.severity,
+                category=f"llm-security-{llm_vuln.vulnerability_type}",
+                owasp_category="A03",  # LLM vulnerabilities often relate to injection
+                title=llm_vuln.title,
+                description=f"{llm_vuln.description}\n\n**Risk Assessment:**\n"
+                           f"- Jailbreak Risk: {llm_vuln.jailbreak_risk:.2%}\n"
+                           f"- Data Leak Probability: {llm_vuln.data_leak_probability:.2%}\n"
+                           f"- Permission Abuse Risk: {llm_vuln.permission_abuse_risk:.2%}\n\n"
+                           f"**Remediation:**\n{llm_vuln.remediation}",
+                code_snippet=f"Successful Payload:\n{llm_vuln.successful_payload[:200]}...",
+                detected_by="LLM Security Scanner (AI)"
+            )
+            vulnerabilities.append(vuln.model_dump())
+            severity_counts[llm_vuln.severity] = severity_counts.get(llm_vuln.severity, 0) + 1
+
+        # Process Auth Scanner results
+        for auth_vuln in auth_scanner_results:
+            vuln = Vulnerability(
+                repo_id=repo_id,
+                scan_id=scan_id,
+                file_path=auth_vuln.file_path,
+                line_start=auth_vuln.line_number,
+                line_end=auth_vuln.line_number,
+                severity=auth_vuln.severity,
+                category=f"auth-{auth_vuln.type}",
+                owasp_category="A07",  # Auth vulnerabilities are A07: Identification and Authentication Failures
+                title=auth_vuln.title,
+                description=f"{auth_vuln.description}\n\n**Attack Scenario:**\n{auth_vuln.attack_scenario}\n\n**Remediation:**\n{auth_vuln.remediation}\n\n**Confidence:** {auth_vuln.confidence:.0%}",
+                code_snippet=auth_vuln.code_snippet or "",
+                detected_by="Auth Scanner (AI)"
+            )
+            vulnerabilities.append(vuln.model_dump())
+            severity_counts[auth_vuln.severity] = severity_counts.get(auth_vuln.severity, 0) + 1
 
         # Apply false positive filtering
         original_vuln_count = len(vulnerabilities)
@@ -944,10 +1318,16 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                     "spotbugs": len(spotbugs_results),
                     "pyre": len(pyre_results),
                     "zap": len(zap_results),
+                    "api_fuzzer": len(api_fuzzer_results),
                     "horusec": len(horusec_results),
                     "pip_audit": len(pip_audit_results),
                     "npm_audit": len(npm_audit_results),
-                    "syft": len(syft_results)
+                    "syft": len(syft_results),
+                    # AI-Powered Scanners
+                    "zero_day": len(zero_day_results),
+                    "business_logic": len(business_logic_results),
+                    "llm_security": len(llm_security_results),
+                    "auth_scanner": len(auth_scanner_results)
                 }
             }}
         )
@@ -983,17 +1363,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
 async def root():
     return {"message": "Security Intelligence Platform API", "version": "1.0.0"}
 
-@api_router.post("/repositories", response_model=Repository)
-async def create_repository(repo: RepositoryCreate):
-    """Create a new repository"""
-    try:
-        repo_obj = Repository(**repo.model_dump())
-        doc = repo_obj.model_dump()
-        doc['created_at'] = doc['created_at'].isoformat()
-        await db.repositories.insert_one(doc)
-        return repo_obj
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: Old create_repository endpoint removed - use the Git Integration endpoint below
 
 @api_router.get("/repositories", response_model=List[Repository])
 async def get_repositories():
@@ -1306,8 +1676,8 @@ Provide:
 
 Format your response in markdown."""
 
-        # Initialize LLM orchestrator with database connection
-        orchestrator = LLMOrchestrator(db=db)
+        # Initialize LLM orchestrator with database connection and settings manager
+        orchestrator = LLMOrchestrator(db=db, settings_manager=settings_manager)
 
         # Determine model
         default_models = {
@@ -1396,81 +1766,7 @@ async def get_repository_stats(repo_id: str):
         logger.error(f"Error getting stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/settings/api-keys")
-async def get_api_keys_status():
-    """Get status of configured API keys (not the actual keys)"""
-    # Get keys from environment or database
-    settings = await db.settings.find_one({"type": "api_keys"}, {"_id": 0})
-
-    # Check environment variables as fallback
-    openai_configured = bool(os.getenv("OPENAI_API_KEY")) or bool(settings and settings.get("openai_key"))
-    anthropic_configured = bool(os.getenv("ANTHROPIC_API_KEY")) or bool(settings and settings.get("anthropic_key"))
-    gemini_configured = bool(os.getenv("GEMINI_API_KEY")) or bool(settings and settings.get("gemini_key"))
-
-    return {
-        "openai": {"configured": openai_configured, "masked": "****" if openai_configured else None},
-        "anthropic": {"configured": anthropic_configured, "masked": "****" if anthropic_configured else None},
-        "gemini": {"configured": gemini_configured, "masked": "****" if gemini_configured else None}
-    }
-
-@api_router.post("/settings/api-keys")
-async def update_api_keys(keys: APIKeysUpdate):
-    """Update API keys in database"""
-    try:
-        update_data = {}
-        if keys.openai_key:
-            update_data["openai_key"] = keys.openai_key
-            os.environ["OPENAI_API_KEY"] = keys.openai_key
-        if keys.anthropic_key:
-            update_data["anthropic_key"] = keys.anthropic_key
-            os.environ["ANTHROPIC_API_KEY"] = keys.anthropic_key
-        if keys.gemini_key:
-            update_data["gemini_key"] = keys.gemini_key
-            os.environ["GEMINI_API_KEY"] = keys.gemini_key
-
-        if update_data:
-            update_data["type"] = "api_keys"
-            update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await db.settings.update_one(
-                {"type": "api_keys"},
-                {"$set": update_data},
-                upsert=True
-            )
-
-        return {"message": "API keys updated successfully", "updated": list(update_data.keys())}
-    except Exception as e:
-        logger.error(f"Error updating API keys: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.delete("/settings/api-keys/{provider}")
-async def delete_api_key(provider: str):
-    """Delete an API key for a specific provider"""
-    try:
-        provider = provider.lower()
-        key_map = {
-            "openai": "openai_key",
-            "anthropic": "anthropic_key",
-            "gemini": "gemini_key"
-        }
-
-        if provider not in key_map:
-            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
-
-        # Remove from database
-        await db.settings.update_one(
-            {"type": "api_keys"},
-            {"$unset": {key_map[provider]: ""}}
-        )
-
-        # Remove from environment (if set via API)
-        env_key = f"{provider.upper()}_API_KEY"
-        if env_key in os.environ:
-            del os.environ[env_key]
-
-        return {"message": f"{provider} API key deleted successfully"}
-    except Exception as e:
-        logger.error(f"Error deleting API key: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: Old duplicate api-keys endpoints removed - use /settings and /settings/api-keys below
 
 @api_router.get("/settings/scanners")
 async def get_scanner_status():
@@ -1503,13 +1799,15 @@ async def get_scanner_status():
         # Advanced scanners (1)
         "nuclei": {"name": "Nuclei", "type": "Template/CVE Scanner", "installed": bool(shutil.which("nuclei")) or os.path.exists("/usr/local/bin/nuclei") or os.path.exists("/opt/homebrew/bin/nuclei")},
 
-        # High Value Addition scanners (7)
+        # High Value Addition scanners (5 active, 2 disabled)
         "snyk": {"name": "Snyk CLI", "type": "Modern Dependency Scanner", "installed": bool(shutil.which("snyk"))},
         "gosec": {"name": "Gosec", "type": "Go Security", "installed": bool(shutil.which("gosec"))},
-        "cargo_audit": {"name": "cargo-audit", "type": "Rust Security", "installed": bool(shutil.which("cargo-audit") or shutil.which("cargo"))},
+        # "cargo_audit": {"name": "cargo-audit", "type": "Rust Security", "installed": False, "disabled": True},  # Rust-specific
         "spotbugs": {"name": "SpotBugs", "type": "Java Bytecode Analysis", "installed": bool(shutil.which("spotbugs"))},
         "pyre": {"name": "Pyre", "type": "Python Type Checker", "installed": bool(shutil.which("pyre"))},
-        "zap": {"name": "OWASP ZAP", "type": "Web Security (DAST)", "installed": bool(shutil.which("zap-baseline.py") or shutil.which("zaproxy"))},
+        "zap": {"name": "OWASP ZAP (Static)", "type": "Web Security Patterns", "installed": True},  # Static analysis
+        "api_fuzzer": {"name": "API Fuzzer", "type": "API Security Testing", "installed": True},  # Built-in
+        "zap_dast": {"name": "OWASP ZAP (DAST)", "type": "Dynamic Web Security", "installed": bool(shutil.which("docker"))},  # Docker-based
         "horusec": {"name": "Horusec", "type": "Multi-Language SAST", "installed": bool(shutil.which("horusec"))},
     }
     return scanners
@@ -1547,12 +1845,719 @@ async def generate_report(request: ReportRequest):
                     "tool": vuln['detected_by']
                 })
             return {"format": "csv", "data": csv_data}
+        elif request.format == "pdf":
+            # Generate PDF report
+            from reporting.pdf_report import PDFSecurityReport
+            from fastapi.responses import Response
+
+            pdf_generator = PDFSecurityReport()
+            pdf_bytes = pdf_generator.generate_report(
+                repo_data=repo,
+                scan_data=scan,
+                vulnerabilities=vulns
+            )
+
+            # Return PDF as downloadable file
+            filename = f"security_report_{request.repo_id}_{request.scan_id}.pdf"
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}"
+                }
+            )
         else:
-            return {"message": "PDF generation not yet implemented"}
+            return {"message": "Unsupported format. Use: json, csv, or pdf"}
     
     except Exception as e:
         logger.error(f"Error generating report: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# SETTINGS ENDPOINTS
+# ============================================
+
+@api_router.get("/settings", response_model=SettingsResponse)
+async def get_settings():
+    """
+    Get all settings status (shows which keys are set, not the actual values)
+    """
+    try:
+        return await settings_manager.get_all_settings()
+    except Exception as e:
+        logger.error(f"Error getting settings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/settings/api-keys")
+async def update_api_keys(request: UpdateAPIKeysRequest):
+    """
+    Update API keys for LLM services and scanners
+
+    - **openai_api_key**: OpenAI API key for GPT models
+    - **anthropic_api_key**: Anthropic API key for Claude models
+    - **gemini_api_key**: Google Gemini API key
+    - **github_token**: GitHub token for better rate limits
+    - **snyk_token**: Snyk authentication token
+
+    Note: Keys are encrypted before storage. Pass empty string to delete a key.
+    """
+    try:
+        from settings.models import APIKeySetting
+
+        logger.info(f"Received API key update request: {request.model_dump()}")
+
+        api_keys = APIKeySetting(
+            openai_api_key=request.openai_api_key,
+            anthropic_api_key=request.anthropic_api_key,
+            gemini_api_key=request.gemini_api_key,
+            github_token=request.github_token,
+            snyk_token=request.snyk_token
+        )
+
+        logger.info("Calling settings_manager.update_api_keys...")
+        await settings_manager.update_api_keys(api_keys)
+        logger.info("API keys updated")
+
+        settings_response = await settings_manager.get_all_settings()
+        logger.info(f"Settings response: {settings_response.model_dump()}")
+
+        return {
+            "message": "API keys updated successfully",
+            "updated": settings_response.model_dump()
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating API keys: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/settings/api-keys")
+async def get_api_keys_values():
+    """
+    Get actual API key values (for administrative purposes)
+    WARNING: This endpoint returns decrypted keys - use with caution
+    """
+    try:
+        keys = await settings_manager.get_api_keys()
+
+        # Mask keys for security (show first 8 chars only)
+        masked_keys = {}
+        for key, value in keys.items():
+            if value:
+                masked_keys[key] = value[:8] + "..." if len(value) > 8 else "***"
+            else:
+                masked_keys[key] = None
+
+        return masked_keys
+
+    except Exception as e:
+        logger.error(f"Error getting API keys: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/settings/ai-scanners", response_model=AIScannerSettings)
+async def get_ai_scanner_settings():
+    """
+    Get AI scanner enable/disable settings
+
+    Returns the current state of all AI-powered security scanners:
+    - Zero-Day Detector (ML-based anomaly detection)
+    - Business Logic Scanner (logic flaw detection)
+    - LLM Security Scanner (prompt injection testing)
+    - Auth Scanner (authentication vulnerability detection)
+    """
+    try:
+        settings = await settings_manager.get_ai_scanner_settings()
+        return AIScannerSettings(**settings)
+    except Exception as e:
+        logger.error(f"Error getting AI scanner settings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/settings/ai-scanners")
+async def update_ai_scanner_settings(request: UpdateAIScannerSettingsRequest):
+    """
+    Update AI scanner enable/disable settings
+
+    - **enable_zero_day_detector**: Enable/disable ML-based zero-day detection
+    - **enable_business_logic_scanner**: Enable/disable business logic flaw detection
+    - **enable_llm_security_scanner**: Enable/disable LLM prompt injection testing
+    - **enable_auth_scanner**: Enable/disable authentication vulnerability scanner
+
+    Note: Only scanners with LLM API keys configured will run when enabled.
+    """
+    try:
+        # Get current settings
+        current_settings = await settings_manager.get_ai_scanner_settings()
+
+        # Update only provided values
+        update_dict = request.model_dump(exclude_unset=True)
+        current_settings.update(update_dict)
+
+        # Save updated settings
+        success = await settings_manager.update_ai_scanner_settings(current_settings)
+
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update AI scanner settings")
+
+        # Clear cache to ensure fresh settings on next scan
+        settings_manager.clear_cache()
+
+        return {
+            "message": "AI scanner settings updated successfully",
+            "updated": current_settings
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating AI scanner settings: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/settings/scanners", response_model=ScannerSettings)
+async def get_scanner_settings_api():
+    """
+    Get all scanner enable/disable settings
+
+    Returns the current state of all 32 security scanners including:
+    - Core Security Scanners (SAST): Semgrep, Bandit, Gitleaks, etc.
+    - Quality Scanners: Pylint, Flake8, Radon, etc.
+    - Compliance Scanners: pip-audit, npm-audit, Syft
+    - Advanced Scanners: Nuclei, CodeQL
+    - High-Value Scanners: Snyk, Gosec, SpotBugs, Pyre, Horusec
+    - Web & API Security: OWASP ZAP (static & DAST), API Fuzzer
+    - AI-Powered Scanners: Zero-Day Detector, Business Logic, LLM Security, Auth Scanner
+    """
+    try:
+        settings = await settings_manager.get_scanner_settings()
+        return settings
+    except Exception as e:
+        logger.error(f"Error getting scanner settings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.put("/settings/scanners")
+async def update_scanner_settings_api(request: UpdateScannerSettingsRequest):
+    """
+    Update scanner enable/disable settings
+
+    Allows enabling or disabling any of the 32 security scanners.
+    Only provide the fields you want to update - all fields are optional.
+
+    Example:
+    ```json
+    {
+        "enable_semgrep": true,
+        "enable_zap_dast": false,
+        "enable_api_fuzzer": true
+    }
+    ```
+
+    Note:
+    - Only enabled scanners will run during security scans
+    - Some scanners require additional setup (e.g., ZAP DAST requires Docker)
+    - Changes take effect immediately on next scan
+    """
+    try:
+        updated_settings = await settings_manager.update_scanner_settings(request)
+
+        # Clear cache to ensure fresh settings on next scan
+        settings_manager.clear_cache()
+
+        return {
+            "message": "Scanner settings updated successfully",
+            "updated": updated_settings.model_dump()
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating scanner settings: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# GNN Model Management Endpoints
+# ============================================
+
+@api_router.get("/model/status")
+async def get_model_status():
+    """
+    Get GNN model and update service status
+
+    Returns:
+    - Model version and loading status
+    - Update service status
+    - Feedback collection stats
+    """
+    try:
+        from engines.zero_day.model_manager import get_model_manager
+        from engines.zero_day.model_updater import get_update_service
+
+        model_manager = await get_model_manager()
+        update_service = await get_update_service()
+
+        return {
+            "model": model_manager.get_status(),
+            "update_service": update_service.get_status()
+        }
+    except Exception as e:
+        logger.warning(f"Model status check failed: {e}")
+        return {
+            "model": {"model_loaded": False, "error": str(e)},
+            "update_service": {"enabled": False}
+        }
+
+
+@api_router.post("/model/check-update")
+async def check_model_update():
+    """
+    Manually trigger a model update check
+
+    This will:
+    1. Check the configured update source for new versions
+    2. Download and install if a newer version is available
+    3. Validate the new model before activation
+    4. Automatically rollback if validation fails
+    """
+    try:
+        from engines.zero_day.model_updater import get_update_service
+
+        update_service = await get_update_service()
+        result = await update_service.force_update()
+
+        return {
+            "success": True,
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"Model update check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/model/feedback")
+async def submit_model_feedback(
+    file_path: str,
+    detected_vulns: list[str],
+    confirmed_vulns: list[str] = [],
+    false_positives: list[str] = [],
+    missed_vulns: list[str] = []
+):
+    """
+    Submit feedback on model detection results
+
+    This feedback is used to improve future model versions.
+    It does NOT trigger immediate retraining.
+
+    - **file_path**: Path of the analyzed file
+    - **detected_vulns**: Vulnerabilities the model detected
+    - **confirmed_vulns**: Which detections were correct (true positives)
+    - **false_positives**: Which detections were wrong
+    - **missed_vulns**: Vulnerabilities the model should have found
+    """
+    try:
+        from engines.zero_day.model_manager import get_model_manager
+
+        model_manager = await get_model_manager()
+
+        # We need the code content to hash it
+        # In practice, this would come from the scan result
+        code_placeholder = f"feedback_for_{file_path}"
+
+        await model_manager.submit_feedback(
+            code=code_placeholder,
+            file_path=file_path,
+            detected_vulns=detected_vulns,
+            confirmed_vulns=confirmed_vulns,
+            false_positives=false_positives,
+            missed_vulns=missed_vulns
+        )
+
+        return {
+            "success": True,
+            "message": "Feedback recorded successfully",
+            "feedback_count": model_manager.get_status().get('feedback_count', 0)
+        }
+    except Exception as e:
+        logger.error(f"Feedback submission failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# Git Integration Endpoints
+# ============================================
+
+@api_router.get("/integrations/git")
+async def get_git_integrations():
+    """Get all connected Git integrations"""
+    try:
+        integrations = await git_integration_service.get_integrations()
+        return {"integrations": [i.model_dump() for i in integrations]}
+    except Exception as e:
+        logger.error(f"Error getting git integrations: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/integrations/git/connect")
+async def connect_git_integration(request: ConnectGitIntegrationRequest):
+    """Connect a Git provider (GitHub/GitLab)"""
+    try:
+        result = await git_integration_service.connect_integration(
+            provider=request.provider,
+            name=request.name,
+            access_token=request.access_token,
+            base_url=request.base_url
+        )
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result.get("error", "Connection failed"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error connecting git integration: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.delete("/integrations/git/{provider}")
+async def disconnect_git_integration(provider: str, name: str = None):
+    """Disconnect a Git provider"""
+    try:
+        git_provider = GitProvider(provider)
+        result = await git_integration_service.disconnect_integration(git_provider, name or provider)
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result.get("error", "Disconnection failed"))
+
+        return result
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error disconnecting git integration: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/integrations/git/{provider}/repositories")
+async def list_remote_repositories(provider: str, page: int = 1, per_page: int = 30):
+    """List repositories from the connected Git provider"""
+    try:
+        git_provider = GitProvider(provider)
+        result = await git_integration_service.list_remote_repositories(
+            git_provider, page=page, per_page=per_page
+        )
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result.get("error"))
+
+        return result
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing repositories: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# NOTE: Duplicate GET /repositories removed - using the main endpoint above that queries db.repositories
+
+@api_router.post("/repositories")
+async def add_repository(request: AddRepositoryRequest):
+    """Add a repository for scanning (supports both public repos and private repos with tokens)"""
+    try:
+        # If marked as public or no token provided, use public repository method
+        if request.is_public or not request.access_token:
+            result = await git_integration_service.add_public_repository(
+                provider=request.provider,
+                repo_url=request.repo_url,
+                auto_scan=request.auto_scan,
+                branch=request.branch,
+                access_token=request.access_token
+            )
+        else:
+            # Use Git Integration method (requires integration to be set up)
+            result = await git_integration_service.add_repository(
+                provider=request.provider,
+                repo_url=request.repo_url,
+                auto_scan=request.auto_scan,
+                branch=request.branch
+            )
+
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result.get("error"))
+
+        # Also add to the main repositories collection for Dashboard display
+        repo_data = result.get("repository", {})
+        if repo_data:
+            main_repo = Repository(
+                id=repo_data.get("repo_id"),
+                name=repo_data.get("name"),
+                url=repo_data.get("clone_url"),
+                branch=repo_data.get("default_branch", "main"),
+                security_score=None,
+                access_token=request.access_token  # Store token if provided for private repos
+            )
+            doc = main_repo.model_dump()
+            doc['created_at'] = doc['created_at'].isoformat()
+            doc['provider'] = repo_data.get("provider")
+            doc['full_name'] = repo_data.get("full_name")
+            doc['added_via'] = repo_data.get("added_via", "git_integration")
+            # Upsert to avoid duplicates
+            await db.repositories.update_one(
+                {"id": main_repo.id},
+                {"$set": doc},
+                upsert=True
+            )
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding repository: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.delete("/repositories/{repo_id}")
+async def remove_repository(repo_id: str):
+    """Remove a repository"""
+    try:
+        # Remove from git_repositories collection
+        result = await git_integration_service.remove_repository(repo_id)
+
+        # Also remove from main repositories collection
+        await db.repositories.delete_one({"id": repo_id})
+
+        # Also delete associated scans and vulnerabilities
+        await db.scans.delete_many({"repo_id": repo_id})
+        await db.vulnerabilities.delete_many({"repo_id": repo_id})
+
+        if not result["success"]:
+            # Even if git integration repo wasn't found, we may have removed from main collection
+            return {"success": True, "message": "Repository removed"}
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing repository: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UnifiedScanRequest(BaseModel):
+    """Request model for unified comprehensive scan"""
+    # Scanner toggles
+    enable_zero_day: bool = True
+    enable_business_logic: bool = True
+    enable_llm_security: bool = True
+    enable_auth_scanner: bool = True
+    enable_codeql: bool = True
+    enable_docker: bool = False
+    enable_iac: bool = False
+
+    # Runtime testing
+    enable_runtime_testing: bool = False
+    base_url: Optional[str] = None
+    auth_token: Optional[str] = None
+
+    # LLM API keys
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+
+    # Docker images
+    docker_images: List[str] = []
+
+    # IaC directories
+    terraform_dirs: List[str] = []
+    kubernetes_dirs: List[str] = []
+
+    # Language detection
+    language: Optional[str] = None
+
+
+@api_router.post("/repositories/{repo_id}/unified-scan")
+async def unified_scan_repository(repo_id: str, config: UnifiedScanRequest, background_tasks: BackgroundTasks):
+    """
+    Run comprehensive unified security scan with all AI-powered scanners
+    """
+    from engines.unified_scanner import UnifiedSecurityScanner, UnifiedScanConfig
+
+    try:
+        # Get repository details
+        repo = await db.repositories.find_one({"id": repo_id})
+        if not repo:
+            raise HTTPException(status_code=404, detail="Repository not found")
+
+        # Clone to temporary directory
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix="fortknox_unified_scan_")
+
+        clone_result = await git_integration_service.clone_repository(
+            repo_id=repo_id,
+            target_dir=temp_dir,
+            branch=repo.get("branch", "main")
+        )
+
+        if not clone_result["success"]:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=clone_result.get("error"))
+
+        # Update scan status
+        await db.repositories.update_one(
+            {"id": repo_id},
+            {"$set": {"scan_status": "running"}}
+        )
+
+        # Prepare scan configuration
+        scan_config = UnifiedScanConfig(
+            repo_path=temp_dir,
+            language=config.language,
+            enable_zero_day=config.enable_zero_day,
+            enable_business_logic=config.enable_business_logic,
+            enable_llm_security=config.enable_llm_security,
+            enable_auth_scanner=config.enable_auth_scanner,
+            enable_codeql=config.enable_codeql,
+            enable_docker=config.enable_docker,
+            enable_iac=config.enable_iac,
+            enable_runtime_testing=config.enable_runtime_testing,
+            base_url=config.base_url,
+            auth_headers={"Authorization": f"Bearer {config.auth_token}"} if config.auth_token else None,
+            llm_api_keys={
+                "openai": config.openai_api_key,
+                "anthropic": config.anthropic_api_key
+            } if config.openai_api_key or config.anthropic_api_key else None,
+            docker_images=config.docker_images,
+            terraform_dirs=config.terraform_dirs,
+            kubernetes_dirs=config.kubernetes_dirs
+        )
+
+        # Run unified scan
+        scanner = UnifiedSecurityScanner(scan_config)
+        scan_results = await scanner.run_comprehensive_scan()
+
+        # Generate consolidated report
+        report = scanner.generate_consolidated_report()
+
+        # Store scan results
+        scan_id = str(uuid.uuid4())
+        scan_document = {
+            "id": scan_id,
+            "repo_id": repo_id,
+            "timestamp": datetime.now(timezone.utc),
+            "config": config.model_dump(),
+            "results": report,
+            "raw_findings": {
+                "zero_day": [f.__dict__ for f in scan_results.zero_day_findings] if hasattr(scan_results.zero_day_findings[0] if scan_results.zero_day_findings else None, '__dict__') else scan_results.zero_day_findings,
+                "business_logic": [f.__dict__ for f in scan_results.business_logic_findings] if hasattr(scan_results.business_logic_findings[0] if scan_results.business_logic_findings else None, '__dict__') else scan_results.business_logic_findings,
+                "llm": [f.model_dump() if hasattr(f, 'model_dump') else f.__dict__ for f in scan_results.llm_findings],
+                "auth": [f.__dict__ for f in scan_results.auth_findings] if hasattr(scan_results.auth_findings[0] if scan_results.auth_findings else None, '__dict__') else scan_results.auth_findings,
+                "codeql": [f.__dict__ for f in scan_results.codeql_findings] if hasattr(scan_results.codeql_findings[0] if scan_results.codeql_findings else None, '__dict__') else scan_results.codeql_findings,
+                "docker": [f.__dict__ for f in scan_results.docker_findings] if hasattr(scan_results.docker_findings[0] if scan_results.docker_findings else None, '__dict__') else scan_results.docker_findings,
+                "iac": [f.__dict__ for f in scan_results.iac_findings] if hasattr(scan_results.iac_findings[0] if scan_results.iac_findings else None, '__dict__') else scan_results.iac_findings,
+            }
+        }
+
+        await db.unified_scans.insert_one(scan_document)
+
+        # Update repository with scan results
+        await db.repositories.update_one(
+            {"id": repo_id},
+            {
+                "$set": {
+                    "last_scan": datetime.now(timezone.utc).isoformat(),
+                    "scan_status": "completed",
+                    "vulnerabilities_count": scan_results.total_vulnerabilities,
+                    "critical_count": scan_results.critical_count,
+                    "high_count": scan_results.high_count,
+                    "security_score": max(0, 100 - report["risk_score"])
+                }
+            }
+        )
+
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return {
+            "success": True,
+            "scan_id": scan_id,
+            "report": report,
+            "message": f"Comprehensive scan completed. Found {scan_results.total_vulnerabilities} vulnerabilities."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in unified scan: {str(e)}", exc_info=True)
+        await db.repositories.update_one(
+            {"id": repo_id},
+            {"$set": {"scan_status": "failed"}}
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/repositories/{repo_id}/latest-scan")
+async def get_latest_scan(repo_id: str):
+    """Get latest unified scan results for a repository"""
+    try:
+        scan = await db.unified_scans.find_one(
+            {"repo_id": repo_id},
+            sort=[("timestamp", -1)]
+        )
+
+        if not scan:
+            raise HTTPException(status_code=404, detail="No scan results found")
+
+        # Remove MongoDB _id field
+        scan.pop("_id", None)
+
+        return scan["results"]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching latest scan: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/repositories/{repo_id}/scan")
+async def scan_repository(repo_id: str, branch: str = None):
+    """Clone and scan a repository (legacy endpoint)"""
+    import tempfile
+    import shutil
+
+    try:
+        # Clone to temporary directory
+        temp_dir = tempfile.mkdtemp(prefix="fortknox_scan_")
+
+        clone_result = await git_integration_service.clone_repository(
+            repo_id=repo_id,
+            target_dir=temp_dir,
+            branch=branch
+        )
+
+        if not clone_result["success"]:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=clone_result.get("error"))
+
+        # The actual scanning would be triggered here
+        # For now, return the cloned path for manual scanning
+        return {
+            "success": True,
+            "message": f"Repository cloned to {temp_dir}",
+            "path": temp_dir,
+            "branch": clone_result.get("branch"),
+            "note": "Use /repositories/{repo_id}/unified-scan for comprehensive AI-powered scanning"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error scanning repository: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Include the router in the main app
 app.include_router(api_router)
