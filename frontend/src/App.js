@@ -362,21 +362,23 @@ const Dashboard = () => {
           </CardContent>
         </Card>
 
-        <Card className={`bg-gradient-to-br from-emerald-500/10 to-green-500/10 ${
+        <Card className={`bg-gradient-to-br ${
           aiStatus.scannerSettings?.enable_llm_security_scanner !== false
-            ? 'border-emerald-500/20'
-            : 'border-dashed border-muted opacity-60'
+            ? aiStatus.hasApiKeys
+              ? 'from-emerald-500/10 to-green-500/10 border-emerald-500/20'
+              : 'from-amber-500/10 to-yellow-500/10 border-amber-500/30 border-dashed'
+            : 'from-gray-500/5 to-gray-500/5 border-dashed border-muted opacity-60'
         }`}>
           <CardContent className="py-4">
             <div className="flex items-center gap-3">
               <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
                 aiStatus.scannerSettings?.enable_llm_security_scanner !== false
-                  ? 'bg-emerald-500/20'
+                  ? aiStatus.hasApiKeys ? 'bg-emerald-500/20' : 'bg-amber-500/20'
                   : 'bg-muted'
               }`}>
                 <Activity className={`h-5 w-5 ${
                   aiStatus.scannerSettings?.enable_llm_security_scanner !== false
-                    ? 'text-emerald-500'
+                    ? aiStatus.hasApiKeys ? 'text-emerald-500' : 'text-amber-500'
                     : 'text-muted-foreground'
                 }`} />
               </div>
@@ -384,10 +386,17 @@ const Dashboard = () => {
                 <div className="text-sm text-muted-foreground">LLM Security</div>
                 <div className="font-semibold flex items-center gap-2">
                   {aiStatus.scannerSettings?.enable_llm_security_scanner !== false ? (
-                    <>
-                      <CheckCircle className="h-4 w-4 text-green-500" />
-                      Active
-                    </>
+                    aiStatus.hasApiKeys ? (
+                      <>
+                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        Active
+                      </>
+                    ) : (
+                      <>
+                        <AlertTriangle className="h-4 w-4 text-amber-500" />
+                        <span className="text-amber-600">Needs API Key</span>
+                      </>
+                    )
                   ) : (
                     <>
                       <XCircle className="h-4 w-4 text-muted-foreground" />
@@ -397,7 +406,11 @@ const Dashboard = () => {
                 </div>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground mt-2">Tests for prompt injection & AI vulnerabilities</p>
+            <p className="text-xs text-muted-foreground mt-2">
+              {aiStatus.scannerSettings?.enable_llm_security_scanner !== false && !aiStatus.hasApiKeys
+                ? "Requires OpenAI, Claude, or Gemini API key"
+                : "Tests for prompt injection & AI vulnerabilities"}
+            </p>
           </CardContent>
         </Card>
 
@@ -2237,8 +2250,23 @@ const SettingsPage = () => {
                 )}
               </div>
               <div className="flex items-center gap-3">
-                <Badge variant={aiScannerSettings.enable_llm_security_scanner ? "default" : "secondary"}>
-                  {aiScannerSettings.enable_llm_security_scanner ? "Enabled" : "Disabled"}
+                <Badge variant={
+                  aiScannerSettings.enable_llm_security_scanner
+                    ? (apiKeyStatus.openai_api_key || apiKeyStatus.anthropic_api_key || apiKeyStatus.gemini_api_key)
+                      ? "default"
+                      : "outline"
+                    : "secondary"
+                } className={
+                  aiScannerSettings.enable_llm_security_scanner &&
+                  !(apiKeyStatus.openai_api_key || apiKeyStatus.anthropic_api_key || apiKeyStatus.gemini_api_key)
+                    ? "border-amber-500 text-amber-600"
+                    : ""
+                }>
+                  {aiScannerSettings.enable_llm_security_scanner
+                    ? (apiKeyStatus.openai_api_key || apiKeyStatus.anthropic_api_key || apiKeyStatus.gemini_api_key)
+                      ? "Enabled"
+                      : "Needs API Key"
+                    : "Disabled"}
                 </Badge>
                 <Button
                   variant="outline"

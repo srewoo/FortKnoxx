@@ -897,6 +897,19 @@ else
     fi
 fi
 
+# LLM SDK packages for AI-powered fix recommendations
+echo ""
+echo "📦 Installing LLM SDK Packages (AI Fix Recommendations)..."
+echo "   Installing OpenAI SDK..."
+pip install openai --quiet 2>/dev/null
+echo "   Installing Anthropic SDK..."
+pip install anthropic --quiet 2>/dev/null
+echo "   Installing Google Generative AI SDK..."
+pip install google-generativeai --quiet 2>/dev/null
+echo "   Installing httpx (async HTTP client)..."
+pip install httpx --quiet 2>/dev/null
+echo "   ✅ LLM SDKs installed"
+
 # API security scanners (Python packages)
 echo ""
 echo "📦 Installing API Security Tools..."
@@ -952,6 +965,7 @@ echo "============================================"
 echo ""
 echo "Summary of installed tools:"
 echo "  ✅ ML/AI: PyTorch, PyTorch Geometric, NetworkX, Transformers, ReportLab"
+echo "  ✅ LLM SDKs: OpenAI, Anthropic, Google Generative AI (for AI fix recommendations)"
 echo "  ✅ CodeQL: Semantic code analysis"
 echo "  ✅ Docker Security: docker-bench-security, Clair"
 echo "  ✅ DAST: OWASP ZAP (Docker-based, requires Docker)"

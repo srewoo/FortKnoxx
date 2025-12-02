@@ -57,7 +57,7 @@ class LLMOrchestrator:
             self.gemini_key = os.getenv("GEMINI_API_KEY")
 
         # Priority 3: Legacy database settings
-        if self.db and (not self.openai_key or not self.anthropic_key or not self.gemini_key):
+        if self.db is not None and (not self.openai_key or not self.anthropic_key or not self.gemini_key):
             await self._load_keys_from_db()
 
         self._keys_loaded = True
