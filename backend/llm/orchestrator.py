@@ -62,6 +62,22 @@ class LLMOrchestrator:
 
         self._keys_loaded = True
 
+        # Log warning about missing API keys
+        missing_providers = []
+        if not self.openai_key:
+            missing_providers.append("OpenAI")
+        if not self.anthropic_key:
+            missing_providers.append("Anthropic")
+        if not self.gemini_key:
+            missing_providers.append("Gemini")
+
+        if missing_providers:
+            logger.warning(
+                f"⚠️  LLM API keys not configured for: {', '.join(missing_providers)}. "
+                "AI-powered features (vulnerability fixes, LLM security testing) will be unavailable for these providers. "
+                "Configure keys in Settings > API Keys or set environment variables."
+            )
+
     async def _load_keys_from_db(self):
         """Load API keys from database if not in environment (legacy)"""
         if self.db is None:
@@ -374,3 +390,22 @@ Format your response in markdown."""
         elif provider == "gemini":
             return bool(self.gemini_key)
         return False
+
+    async def get_available_providers(self) -> Dict[str, bool]:
+        """Get availability status of all providers"""
+        await self._load_keys()
+        return {
+            "openai": bool(self.openai_key),
+            "anthropic": bool(self.anthropic_key),
+            "gemini": bool(self.gemini_key)
+        }
+
+    async def ensure_provider_available(self, provider: str) -> None:
+        """Raise informative error if provider is not available"""
+        await self._load_keys()
+        if not self.is_provider_available(provider):
+            raise ValueError(
+                f"LLM provider '{provider}' is not configured. "
+                f"Please set the API key in Settings > API Keys or configure the "
+                f"{provider.upper()}_API_KEY environment variable."
+            )

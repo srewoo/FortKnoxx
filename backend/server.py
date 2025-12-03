@@ -111,13 +111,52 @@ from secrets_vault.encryption import encryption_service
 
 # NOTE: ROOT_DIR and load_dotenv already called at top of file (lines 1-5)
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Import scanner health utilities
+from utils.scanner_health import (
+    check_all_scanners, log_scanner_health_report, ScanExecutionReport,
+    ScannerHealthReport
+)
+
+# MongoDB connection with validation
+def get_required_env(key: str, description: str) -> str:
+    """Get required environment variable with helpful error message"""
+    value = os.environ.get(key)
+    if not value:
+        raise EnvironmentError(
+            f"Required environment variable '{key}' ({description}) is not set. "
+            f"Please check your .env file or environment configuration."
+        )
+    return value
+
+try:
+    mongo_url = get_required_env('MONGO_URL', 'MongoDB connection string')
+    db_name = get_required_env('DB_NAME', 'MongoDB database name')
+    client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
+    db = client[db_name]
+except EnvironmentError as e:
+    print(f"❌ Configuration Error: {e}")
+    raise SystemExit(1)
+except Exception as e:
+    print(f"❌ Failed to initialize MongoDB client: {e}")
+    raise SystemExit(1)
+
+# Global scanner health report (populated at startup)
+_scanner_health_report: Optional[ScannerHealthReport] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _scanner_health_report
+
+    # Validate MongoDB connection before proceeding
+    logger.info("Validating MongoDB connection...")
+    try:
+        await client.admin.command('ping')
+        logger.info("✅ MongoDB connection validated successfully")
+    except Exception as e:
+        logger.error(f"❌ MongoDB connection failed: {e}")
+        logger.error("Please check your MONGO_URL environment variable and ensure MongoDB is running")
+        raise SystemExit(1)
+
     # Startup: Initialize settings manager
     settings_manager.set_db(db)
     settings_manager.set_encryption(encryption_service)
@@ -127,6 +166,21 @@ async def lifespan(app: FastAPI):
     git_integration_service.set_db(db)
     git_integration_service.set_encryption(encryption_service)
     logger.info("Git integration service initialized")
+
+    # Run scanner health check at startup
+    logger.info("Running scanner health check...")
+    try:
+        scanner_settings = await settings_manager.get_scanner_settings()
+        _scanner_health_report = await check_all_scanners(scanner_settings)
+        log_scanner_health_report(_scanner_health_report)
+
+        if _scanner_health_report.unavailable_count > 0:
+            logger.warning(
+                f"⚠️  {_scanner_health_report.unavailable_count} scanners are unavailable. "
+                "Scans will still run but may have incomplete coverage."
+            )
+    except Exception as e:
+        logger.warning(f"Scanner health check failed: {e}")
 
     # Initialize GNN Model Manager (loads pre-trained model, does NOT train on startup)
     model_manager = None
@@ -305,15 +359,34 @@ class ReportRequest(BaseModel):
 # NOTE: APIKeysUpdate removed - duplicate of UpdateAPIKeysRequest from settings.models
 
 # Utility Functions
+def get_secure_clone_dir(repo_id: str) -> Optional[str]:
+    """
+    Get a secure clone directory path with restricted permissions.
+    Returns None if repo_id is invalid.
+    """
+    # Validate repo_id to prevent path traversal
+    if not repo_id or '/' in repo_id or '\\' in repo_id or '..' in repo_id:
+        return None
+
+    # Use a more secure base directory with restricted permissions
+    base_dir = os.environ.get('FORTKNOXX_CLONE_DIR', '/tmp/fortknoxx_repos')
+
+    # Create base directory with restricted permissions if it doesn't exist
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir, mode=0o700, exist_ok=True)
+
+    return os.path.join(base_dir, repo_id)
+
+
 async def clone_repository(repo_url: str, token: str, branch: str, repo_id: str) -> Optional[str]:
     """Clone repository to local directory with automatic branch detection"""
     try:
-        # Validate repo_id to prevent path traversal
-        if not repo_id or '/' in repo_id or '\\' in repo_id or '..' in repo_id:
+        # Get secure clone directory
+        clone_dir = get_secure_clone_dir(repo_id)
+        if not clone_dir:
             logger.error(f"Invalid repo_id: {repo_id}")
             return None
 
-        clone_dir = f"/tmp/repos/{repo_id}"
         if os.path.exists(clone_dir):
             shutil.rmtree(clone_dir)
 
@@ -600,6 +673,100 @@ def calculate_compliance_score(compliance_issues: List[Dict]) -> int:
 
     return int(score)
 
+async def process_scan_with_timeout(repo_id: str, scan_id: str, repo_path: str):
+    """
+    Wrapper function that enforces total scan timeout.
+    This prevents scans from running indefinitely.
+    """
+    scan_limits = get_scan_limits()
+    total_timeout = scan_limits.total_scan_timeout  # Default: 3600 seconds (1 hour)
+
+    try:
+        await asyncio.wait_for(
+            process_scan_results(repo_id, scan_id, repo_path),
+            timeout=total_timeout
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Scan {scan_id} exceeded total timeout of {total_timeout}s")
+        # Update scan status to timeout
+        await db.scans.update_one(
+            {"id": scan_id},
+            {"$set": {
+                "status": "timeout",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "error_message": f"Scan exceeded maximum allowed time ({total_timeout}s)"
+            }}
+        )
+        await db.repositories.update_one(
+            {"id": repo_id},
+            {"$set": {"scan_status": "timeout"}}
+        )
+        # Cleanup
+        if os.path.exists(repo_path):
+            shutil.rmtree(repo_path)
+    except Exception as e:
+        logger.error(f"Unexpected error in scan wrapper: {str(e)}")
+        # The inner process_scan_results should handle its own errors,
+        # but this catches any unexpected issues
+        raise
+
+
+async def run_scanner_with_tracking(
+    scanner_name: str,
+    scanner_func,
+    execution_report: ScanExecutionReport,
+    enabled: bool = True,
+    available: bool = True,
+    timeout_seconds: int = 300
+) -> list:
+    """
+    Run a scanner with tracking and error handling.
+    Returns results list (empty if failed/skipped).
+    """
+    if not enabled:
+        execution_report.record_scanner_result(
+            scanner_name, success=True, skipped=True, skip_reason="Disabled in settings"
+        )
+        logger.info(f"{scanner_name}: Disabled in settings")
+        return []
+
+    if not available:
+        execution_report.record_scanner_result(
+            scanner_name, success=False, error_message="Scanner not available/installed"
+        )
+        logger.warning(f"{scanner_name}: Scanner not available")
+        return []
+
+    try:
+        results = await asyncio.wait_for(scanner_func(), timeout=timeout_seconds)
+        results = results if results is not None else []
+
+        # Validate results is a list
+        if not isinstance(results, list):
+            logger.warning(f"{scanner_name}: Expected list, got {type(results)}. Converting.")
+            results = [results] if results else []
+
+        execution_report.record_scanner_result(
+            scanner_name, success=True, findings_count=len(results)
+        )
+        logger.info(f"{scanner_name} completed: {len(results)} findings")
+        return results
+
+    except asyncio.TimeoutError:
+        execution_report.record_scanner_result(
+            scanner_name, success=False, error_message=f"Timed out after {timeout_seconds}s"
+        )
+        logger.error(f"{scanner_name}: Timed out after {timeout_seconds}s")
+        return []
+
+    except Exception as e:
+        execution_report.record_scanner_result(
+            scanner_name, success=False, error_message=str(e)
+        )
+        logger.error(f"{scanner_name} failed: {str(e)}")
+        return []
+
+
 async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
     """Process all scan results and store vulnerabilities"""
 
@@ -611,6 +778,10 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             return severity_value.lower()
         else:
             return default
+
+    # Initialize execution report for tracking scanner success/failure
+    execution_report = ScanExecutionReport(scan_id=scan_id)
+    scan_start_time = asyncio.get_event_loop().time()
 
     try:
         # Update scan status
@@ -1319,56 +1490,76 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                        f"({filter_stats['reduction_percent']}% reduction)")
 
         # Perform context-aware analysis and enrichment
+        enriched_vulns = None  # Track whether enrichment succeeded
+        context_analysis_succeeded = False
+
         if vulnerabilities and os.path.exists(repo_path):
             logger.info("Starting context-aware analysis...")
             context_analyzer = ContextAnalyzer()
 
             try:
-                # Analyze repository structure
-                repo_structure = await context_analyzer.analyze_repository_structure(repo_path)
+                # Analyze repository structure with timeout
+                repo_structure = await asyncio.wait_for(
+                    context_analyzer.analyze_repository_structure(repo_path),
+                    timeout=60  # 1 minute timeout for structure analysis
+                )
                 logger.info(f"Repository structure analyzed: {repo_structure.get('total_files', 0)} files")
 
-                # Enrich and prioritize vulnerabilities
-                enriched_vulns = await context_analyzer.prioritize_vulnerabilities(
-                    vulnerabilities,
-                    repo_path
+                # Enrich and prioritize vulnerabilities with timeout
+                enriched_vulns = await asyncio.wait_for(
+                    context_analyzer.prioritize_vulnerabilities(vulnerabilities, repo_path),
+                    timeout=120  # 2 minute timeout for prioritization
                 )
 
                 # Replace vulnerabilities with enriched versions only if we got valid results
                 if enriched_vulns is not None and len(enriched_vulns) > 0:
                     vulnerabilities = enriched_vulns
+                    context_analysis_succeeded = True
+                    logger.info(f"Context enrichment applied to {len(vulnerabilities)} vulnerabilities")
                 else:
                     logger.warning("Context analyzer returned empty results, using original vulnerabilities")
+
+            except asyncio.TimeoutError:
+                logger.warning("Context analysis timed out, using original vulnerabilities without enrichment")
+                execution_report.record_scanner_result(
+                    "context_analyzer", success=False, error_message="Timed out"
+                )
             except Exception as e:
                 logger.error(f"Context analysis failed: {str(e)}, using original vulnerabilities")
+                execution_report.record_scanner_result(
+                    "context_analyzer", success=False, error_message=str(e)
+                )
                 # Continue with original vulnerabilities
 
-            # Recalculate severity counts based on enriched data
-            severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-            for vuln in vulnerabilities:
-                # Ensure every vulnerability has a severity
-                severity_value = vuln.get("severity", "medium")
-                # Handle case where severity might be a list
-                if isinstance(severity_value, list):
-                    severity = severity_value[0].lower() if severity_value else "medium"
-                elif isinstance(severity_value, str):
-                    severity = severity_value.lower()
-                else:
-                    severity = "medium"
+        # Recalculate severity counts (works for both enriched and original vulns)
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        for vuln in vulnerabilities:
+            # Ensure every vulnerability has a severity
+            severity_value = vuln.get("severity", "medium")
+            # Handle case where severity might be a list
+            if isinstance(severity_value, list):
+                severity = severity_value[0].lower() if severity_value else "medium"
+            elif isinstance(severity_value, str):
+                severity = severity_value.lower()
+            else:
+                severity = "medium"
 
-                if severity not in severity_counts:
-                    severity = "medium"  # Default to medium if invalid
-                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            # Normalize and validate severity
+            if severity not in severity_counts:
+                severity = "medium"  # Default to medium if invalid
 
-            # Generate priority report
-            priority_report = context_analyzer.generate_priority_report(enriched_vulns)
-            logger.info(f"Priority analysis complete: {priority_report.get('critical_priority', 0)} critical, "
-                       f"{priority_report.get('high_priority', 0)} high priority issues")
-        else:
-            # Ensure all vulnerabilities have severity even without context analysis
-            for vuln in vulnerabilities:
-                if "severity" not in vuln or not vuln["severity"]:
-                    vuln["severity"] = "medium"  # Default severity
+            # Ensure the vulnerability has a valid severity string
+            vuln["severity"] = severity
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+        # Generate priority report only if context analysis succeeded
+        if context_analysis_succeeded and enriched_vulns:
+            try:
+                priority_report = context_analyzer.generate_priority_report(enriched_vulns)
+                logger.info(f"Priority analysis complete: {priority_report.get('critical_priority', 0)} critical, "
+                           f"{priority_report.get('high_priority', 0)} high priority issues")
+            except Exception as e:
+                logger.warning(f"Failed to generate priority report: {e}")
 
         # Store vulnerabilities
         if vulnerabilities:
@@ -1408,11 +1599,20 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         # Count files
         total_files = sum(1 for _ in Path(repo_path).rglob("*") if _.is_file())
 
-        # Update scan
+        # Check for high scanner failure rate and warn
+        if execution_report.should_warn_about_failures(threshold=50.0):
+            logger.warning(execution_report.get_summary_message())
+            # Mark scan as having issues but still completed
+            scan_status = "completed_with_warnings"
+        else:
+            scan_status = "completed"
+            logger.info(execution_report.get_summary_message())
+
+        # Update scan with execution report
         await db.scans.update_one(
             {"id": scan_id},
             {"$set": {
-                "status": "completed",
+                "status": scan_status,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "total_files": total_files,
                 "vulnerabilities_count": len(vulnerabilities),
@@ -1458,40 +1658,116 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                     "business_logic": len(business_logic_results),
                     "llm_security": len(llm_security_results),
                     "auth_scanner": len(auth_scanner_results)
-                }
+                },
+                # Add execution report for visibility into scanner success/failures
+                "execution_report": execution_report.to_dict()
             }}
         )
-        
+
         # Update repository
         await db.repositories.update_one(
             {"id": repo_id},
             {"$set": {
                 "last_scan": datetime.now(timezone.utc).isoformat(),
-                "scan_status": "completed"
+                "scan_status": scan_status
             }}
         )
-        
+
         # Cleanup
         if os.path.exists(repo_path):
             shutil.rmtree(repo_path)
-        
+
         logger.info(f"Scan {scan_id} completed with {len(vulnerabilities)} vulnerabilities")
-        
+
+    except asyncio.TimeoutError:
+        logger.error(f"Scan {scan_id} timed out after exceeding total scan timeout")
+        await db.scans.update_one(
+            {"id": scan_id},
+            {"$set": {
+                "status": "timeout",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "error_message": "Scan exceeded maximum allowed time",
+                "execution_report": execution_report.to_dict() if execution_report else None
+            }}
+        )
+        await db.repositories.update_one(
+            {"id": repo_id},
+            {"$set": {"scan_status": "timeout"}}
+        )
+        # Cleanup on timeout
+        if os.path.exists(repo_path):
+            shutil.rmtree(repo_path)
+
     except Exception as e:
         logger.error(f"Error processing scan: {str(e)}")
         await db.scans.update_one(
             {"id": scan_id},
-            {"$set": {"status": "failed", "completed_at": datetime.now(timezone.utc).isoformat()}}
+            {"$set": {
+                "status": "failed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "error_message": str(e),
+                "execution_report": execution_report.to_dict() if execution_report else None
+            }}
         )
         await db.repositories.update_one(
             {"id": repo_id},
             {"$set": {"scan_status": "failed"}}
         )
+        # Cleanup on failure
+        if os.path.exists(repo_path):
+            shutil.rmtree(repo_path)
 
 # API Routes
 @api_router.get("/")
 async def root():
     return {"message": "Security Intelligence Platform API", "version": "1.0.0"}
+
+
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint with database and scanner status"""
+    health = {
+        "status": "healthy",
+        "database": "unknown",
+        "scanners": None
+    }
+
+    # Check database connection
+    try:
+        await client.admin.command('ping')
+        health["database"] = "connected"
+    except Exception as e:
+        health["status"] = "unhealthy"
+        health["database"] = f"disconnected: {str(e)}"
+
+    # Include scanner health if available
+    if _scanner_health_report:
+        health["scanners"] = {
+            "total": _scanner_health_report.total_scanners,
+            "available": _scanner_health_report.available_count,
+            "unavailable": _scanner_health_report.unavailable_count,
+            "is_healthy": _scanner_health_report.is_healthy()
+        }
+        if not _scanner_health_report.is_healthy():
+            health["status"] = "degraded"
+
+    return health
+
+
+@api_router.get("/scanners/health")
+async def get_scanner_health():
+    """Get detailed scanner health status"""
+    if _scanner_health_report:
+        return _scanner_health_report.to_dict()
+
+    # Run fresh health check if not available
+    try:
+        scanner_settings = await settings_manager.get_scanner_settings()
+        report = await check_all_scanners(scanner_settings)
+        return report.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check scanner health: {str(e)}")
+
 
 # NOTE: Old create_repository endpoint removed - use the Git Integration endpoint below
 
@@ -1584,8 +1860,8 @@ async def start_scan(repo_id: str, background_tasks: BackgroundTasks):
         if not repo_path:
             raise HTTPException(status_code=500, detail="Failed to clone repository")
         
-        # Start background scan
-        background_tasks.add_task(process_scan_results, repo_id, scan.id, repo_path)
+        # Start background scan with timeout enforcement
+        background_tasks.add_task(process_scan_with_timeout, repo_id, scan.id, repo_path)
         
         return {"scan_id": scan.id, "status": "started", "message": "Scan initiated successfully"}
     

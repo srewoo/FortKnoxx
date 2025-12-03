@@ -1418,73 +1418,121 @@ const ScanDetail = () => {
         <p className="text-muted-foreground mt-2">Detailed vulnerability analysis</p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Security</CardDescription>
+      {/* Grouped Scan Results Display */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Health Scores Group */}
+        <Card className="border-2">
+          <CardHeader className="pb-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950 dark:to-indigo-950 rounded-t-lg">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Activity className="h-5 w-5 text-blue-600" />
+              Health Scores
+            </CardTitle>
+            <CardDescription>Overall health metrics (0-100, higher is better)</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${(scan?.security_score || 0) >= 70 ? 'text-green-500' : (scan?.security_score || 0) >= 40 ? 'text-yellow-500' : 'text-red-500'}`} data-testid="scan-security-score">
-              {scan?.security_score || 0}
+          <CardContent className="pt-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                <div className="text-xs text-muted-foreground mb-1 font-medium">Security</div>
+                <div className={`text-2xl font-bold ${(scan?.security_score || 0) >= 70 ? 'text-green-500' : (scan?.security_score || 0) >= 40 ? 'text-yellow-500' : 'text-red-500'}`} data-testid="scan-security-score">
+                  {scan?.security_score || 0}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {(scan?.security_score || 0) >= 70 ? '✓ Good' : (scan?.security_score || 0) >= 40 ? '⚠ Fair' : '✗ Poor'}
+                </div>
+              </div>
+              <div className="text-center p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                <div className="text-xs text-muted-foreground mb-1 font-medium">Quality</div>
+                <div className={`text-2xl font-bold ${(scan?.quality_score || 100) >= 70 ? 'text-green-500' : (scan?.quality_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
+                  {scan?.quality_score || 100}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {(scan?.quality_score || 100) >= 70 ? '✓ Good' : (scan?.quality_score || 100) >= 40 ? '⚠ Fair' : '✗ Poor'}
+                </div>
+              </div>
+              <div className="text-center p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                <div className="text-xs text-muted-foreground mb-1 font-medium">Compliance</div>
+                <div className={`text-2xl font-bold ${(scan?.compliance_score || 100) >= 70 ? 'text-green-500' : (scan?.compliance_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
+                  {scan?.compliance_score || 100}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {(scan?.compliance_score || 100) >= 70 ? '✓ Good' : (scan?.compliance_score || 100) >= 40 ? '⚠ Fair' : '✗ Poor'}
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Quality</CardDescription>
+        {/* Security Issues Group */}
+        <Card className="border-2">
+          <CardHeader className="pb-3 bg-gradient-to-r from-red-50 to-orange-50 dark:from-red-950 dark:to-orange-950 rounded-t-lg">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Shield className="h-5 w-5 text-red-600" />
+              Security Vulnerabilities
+            </CardTitle>
+            <CardDescription>Issues found that may pose security risks</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${(scan?.quality_score || 100) >= 70 ? 'text-green-500' : (scan?.quality_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
-              {scan?.quality_score || 100}
+          <CardContent className="pt-4">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm text-muted-foreground">Total Issues Found</span>
+              <span className="text-3xl font-bold" data-testid="scan-total-issues">{scan?.vulnerabilities_count || 0}</span>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Compliance</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${(scan?.compliance_score || 100) >= 70 ? 'text-green-500' : (scan?.compliance_score || 100) >= 40 ? 'text-yellow-500' : 'text-red-500'}`}>
-              {scan?.compliance_score || 100}
+            <div className="grid grid-cols-4 gap-2">
+              <div className="text-center p-2 bg-red-50 dark:bg-red-950 rounded-lg border border-red-200 dark:border-red-800">
+                <div className="text-xs text-red-600 dark:text-red-400 font-medium">Critical</div>
+                <div className="text-xl font-bold text-red-600" data-testid="scan-critical">{scan?.critical_count || 0}</div>
+              </div>
+              <div className="text-center p-2 bg-orange-50 dark:bg-orange-950 rounded-lg border border-orange-200 dark:border-orange-800">
+                <div className="text-xs text-orange-600 dark:text-orange-400 font-medium">High</div>
+                <div className="text-xl font-bold text-orange-500" data-testid="scan-high">{scan?.high_count || 0}</div>
+              </div>
+              <div className="text-center p-2 bg-yellow-50 dark:bg-yellow-950 rounded-lg border border-yellow-200 dark:border-yellow-800">
+                <div className="text-xs text-yellow-600 dark:text-yellow-400 font-medium">Medium</div>
+                <div className="text-xl font-bold text-yellow-500">{scan?.medium_count || 0}</div>
+              </div>
+              <div className="text-center p-2 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
+                <div className="text-xs text-blue-600 dark:text-blue-400 font-medium">Low</div>
+                <div className="text-xl font-bold text-blue-500">{scan?.low_count || 0}</div>
+              </div>
             </div>
+            {(scan?.critical_count > 0 || scan?.high_count > 0) && (
+              <div className="mt-3 p-2 bg-red-100 dark:bg-red-900 rounded text-xs text-red-700 dark:text-red-300 flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3" />
+                {scan?.critical_count > 0 ? 'Critical issues require immediate attention!' : 'High severity issues should be addressed soon.'}
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Security Issues</CardDescription>
+        {/* Code Quality Group */}
+        <Card className="border-2">
+          <CardHeader className="pb-3 bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-950 dark:to-pink-950 rounded-t-lg">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <FileCode className="h-5 w-5 text-purple-600" />
+              Code Quality
+            </CardTitle>
+            <CardDescription>Code style, maintainability & best practices</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold" data-testid="scan-total-issues">{scan?.vulnerabilities_count || 0}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Critical</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-500" data-testid="scan-critical">{scan?.critical_count || 0}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>High</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-orange-500" data-testid="scan-high">{scan?.high_count || 0}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Quality Issues</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-blue-500">{scan?.quality_issues_count ?? qualityIssues.length}</div>
+          <CardContent className="pt-4">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm text-muted-foreground">Quality Issues</span>
+              <span className="text-3xl font-bold text-purple-600">{scan?.quality_issues_count ?? qualityIssues.length}</span>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground">Compliance Issues</span>
+                <span className="font-medium">{scan?.compliance_issues_count || 0}</span>
+              </div>
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground">Files Scanned</span>
+                <span className="font-medium">{scan?.total_files || 0}</span>
+              </div>
+              {scan?.repo_stats?.languages && scan.repo_stats.languages.length > 0 && (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-muted-foreground">Languages</span>
+                  <span className="font-medium">{scan.repo_stats.languages.join(', ')}</span>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -2681,6 +2729,10 @@ const Layout = ({ children }) => {
               <a href="/help.html" target="_blank" rel="noopener noreferrer" className="text-sm font-medium hover:text-primary transition-colors flex items-center gap-1" data-testid="nav-help">
                 <HelpCircle className="h-5 w-5" />
                 Help
+              </a>
+              <a href={`${process.env.REACT_APP_BACKEND_URL}/docs`} target="_blank" rel="noopener noreferrer" className="text-sm font-medium hover:text-primary transition-colors flex items-center gap-1" data-testid="nav-api-docs">
+                <FileCode className="h-5 w-5" />
+                API Docs
               </a>
               <Link to="/settings" className="text-sm font-medium hover:text-primary transition-colors" data-testid="nav-settings">
                 <Settings className="h-5 w-5" />
