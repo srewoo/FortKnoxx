@@ -300,14 +300,14 @@ class LLMOrchestrator:
         """
         # Extract and limit code snippet to avoid token limits
         code_snippet = vulnerability.get('code_snippet', 'No code snippet available')
-        # Limit code snippet to ~500 characters to stay within token limits
-        if len(code_snippet) > 500:
-            code_snippet = code_snippet[:500] + "\n... (truncated)"
+        # Limit code snippet to ~5000 characters to stay within token limits
+        if len(code_snippet) > 5000:
+            code_snippet = code_snippet[:5000] + "\n... (truncated)"
 
-        # Get description, limit to 500 chars
+        # Get description, limit to 1000 chars
         description = vulnerability.get('description', 'No description available')
-        if len(description) > 500:
-            description = description[:500] + "..."
+        if len(description) > 1000:
+            description = description[:1000] + "..."
 
         # Build concise prompt - only essential information
         prompt = f"""Analyze this security vulnerability and provide a fix recommendation:

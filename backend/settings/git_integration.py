@@ -8,9 +8,12 @@ import re
 import httpx
 import hashlib
 import hmac
+import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 from .models import GitProvider, GitIntegration, GitRepository, GitIntegrationStatus
+
+logger = logging.getLogger(__name__)
 
 
 class GitIntegrationService:
@@ -298,8 +301,8 @@ class GitIntegrationService:
                     token, repo_info["owner"], repo_info["name"]
                 )
             elif provider == GitProvider.GITLAB:
-                # For GitLab, we need base_url - use default gitlab.com if not provided
-                base_url = "https://gitlab.com"
+                # For GitLab, use the default API URL
+                base_url = self.GITLAB_API_URL  # https://gitlab.com/api/v4
                 repo_details = await self._gitlab_get_repo(
                     token, base_url, f"{repo_info['owner']}/{repo_info['name']}"
                 )
@@ -685,7 +688,9 @@ class GitIntegrationService:
             if token:
                 headers["PRIVATE-TOKEN"] = token
 
+            logger.debug(f"GitLab API request: {url} (token provided: {bool(token)})")
             response = await client.get(url, headers=headers)
+            logger.debug(f"GitLab API response status: {response.status_code}")
 
             if response.status_code == 200:
                 project = response.json()
@@ -698,6 +703,8 @@ class GitIntegrationService:
                     "default_branch": project.get("default_branch", "main"),
                     "private": project["visibility"] != "public"
                 }
+            else:
+                logger.warning(f"GitLab API error: {response.status_code} - {response.text[:200]}")
 
         return None
 
@@ -708,15 +715,46 @@ class GitIntegrationService:
         # https://github.com/owner/repo.git
         # git@github.com:owner/repo.git
         # https://gitlab.com/owner/repo
+        # https://gitlab.com/group/subgroup/repo (GitLab nested groups)
 
-        patterns = [
-            r"https?://(?:www\.)?github\.com/([^/]+)/([^/\.]+)(?:\.git)?",
-            r"https?://(?:www\.)?gitlab\.com/([^/]+)/([^/\.]+)(?:\.git)?",
-            r"https?://[^/]+/([^/]+)/([^/\.]+)(?:\.git)?",  # Self-hosted
-            r"git@[^:]+:([^/]+)/([^/\.]+)(?:\.git)?",  # SSH
+        # GitLab patterns (supports nested groups like group/subgroup/repo)
+        gitlab_patterns = [
+            r"https?://(?:www\.)?gitlab\.com/(.+)/([^/\.]+)(?:\.git)?/?$",
+            r"git@gitlab\.com:(.+)/([^/\.]+)(?:\.git)?$",
         ]
 
-        for pattern in patterns:
+        # GitHub patterns
+        github_patterns = [
+            r"https?://(?:www\.)?github\.com/([^/]+)/([^/\.]+)(?:\.git)?/?$",
+            r"git@github\.com:([^/]+)/([^/\.]+)(?:\.git)?$",
+        ]
+
+        # Self-hosted patterns
+        other_patterns = [
+            r"https?://[^/]+/(.+)/([^/\.]+)(?:\.git)?/?$",  # Self-hosted (supports nested paths)
+            r"git@[^:]+:(.+)/([^/\.]+)(?:\.git)?$",  # SSH
+        ]
+
+        # Try GitLab patterns first (supports nested groups)
+        for pattern in gitlab_patterns:
+            match = re.match(pattern, url)
+            if match:
+                return {
+                    "owner": match.group(1),
+                    "name": match.group(2)
+                }
+
+        # Then GitHub patterns
+        for pattern in github_patterns:
+            match = re.match(pattern, url)
+            if match:
+                return {
+                    "owner": match.group(1),
+                    "name": match.group(2)
+                }
+
+        # Finally other patterns
+        for pattern in other_patterns:
             match = re.match(pattern, url)
             if match:
                 return {

@@ -1785,6 +1785,7 @@ const SettingsPage = () => {
   });
   const [connectedRepos, setConnectedRepos] = useState([]);
   const [remoteRepos, setRemoteRepos] = useState([]);
+  const [remoteReposProvider, setRemoteReposProvider] = useState(null);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [repoSearchQuery, setRepoSearchQuery] = useState("");
 
@@ -1881,6 +1882,7 @@ const SettingsPage = () => {
     try {
       const res = await axios.get(`${API}/integrations/git/${provider}/repositories`);
       setRemoteRepos(res.data.repositories || []);
+      setRemoteReposProvider(provider);
     } catch (error) {
       toast.error("Failed to fetch repositories");
     } finally {
@@ -2526,8 +2528,10 @@ const SettingsPage = () => {
               <Separator />
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="font-semibold text-sm text-muted-foreground">Available Repositories ({remoteRepos.length})</div>
-                  <Button variant="ghost" size="sm" onClick={() => { setRemoteRepos([]); setRepoSearchQuery(""); }}>
+                  <div className="font-semibold text-sm text-muted-foreground">
+                    Available {remoteReposProvider === "gitlab" ? "GitLab" : "GitHub"} Repositories ({remoteRepos.length})
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => { setRemoteRepos([]); setRepoSearchQuery(""); setRemoteReposProvider(null); }}>
                     <XCircle className="h-4 w-4 mr-1" /> Close
                   </Button>
                 </div>
@@ -2559,8 +2563,10 @@ const SettingsPage = () => {
                       <Button
                         size="sm"
                         onClick={() => addRepository(
-                          gitIntegrations[0]?.provider || "github",
-                          repo.clone_url || `https://github.com/${repo.full_name}`,
+                          remoteReposProvider || "github",
+                          repo.clone_url || (remoteReposProvider === "gitlab"
+                            ? `https://gitlab.com/${repo.full_name}`
+                            : `https://github.com/${repo.full_name}`),
                           repo.private
                         )}
                         disabled={connectedRepos.some(r => r.full_name === repo.full_name)}
