@@ -2237,6 +2237,32 @@ const SettingsPage = () => {
             <div className="font-semibold text-sm text-muted-foreground">Scanner Tokens</div>
 
             <div className="space-y-2">
+              <Label htmlFor="github">GitHub Token</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="github"
+                  type="password"
+                  placeholder={apiKeyStatus.github_token ? "••••••••••••••••" : "ghp_..."}
+                  value={apiKeys.github_token}
+                  onChange={(e) => setApiKeys({ ...apiKeys, github_token: e.target.value })}
+                  className="flex-1"
+                />
+                {apiKeyStatus.github_token && (
+                  <Button variant="destructive" size="icon" onClick={() => deleteApiKey("github_token")}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                {apiKeyStatus.github_token ? (
+                  <><CheckCircle className="h-4 w-4 text-green-500" /> Configured</>
+                ) : (
+                  <><XCircle className="h-4 w-4 text-gray-400" /> Optional - higher rate limits for GitHub API</>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="snyk">Snyk Token</Label>
               <div className="flex gap-2">
                 <Input
