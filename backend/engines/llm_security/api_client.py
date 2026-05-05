@@ -5,10 +5,18 @@ Makes actual API calls to OpenAI, Anthropic, Google Gemini for security testing
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any, List
+import time
 from dataclasses import dataclass
 from enum import Enum
-import time
+from typing import Any, Dict, List, Optional
+
+from llm.model_registry import (
+    DEFAULT_MODEL_BY_PROVIDER,
+    get_pricing,
+    resolve_model_id,
+    supports_temperature,
+    uses_max_completion_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -224,14 +232,14 @@ class LLMAPIClient:
         if not OPENAI_AVAILABLE:
             return APIResponse(
                 provider=Provider.OPENAI,
-                model=model or "gpt-4",
+                model=resolve_model_id(model, "openai"),
                 prompt=prompt,
                 response_text="",
                 response_time=0,
                 error="OpenAI SDK not installed"
             )
 
-        model_name = model or "gpt-4o-mini"
+        model_name = resolve_model_id(model, "openai")
         start_time = time.time()
 
         try:
@@ -242,12 +250,15 @@ class LLMAPIClient:
 
             messages.append({"role": "user", "content": prompt})
 
-            response = await openai.ChatCompletion.acreate(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            kwargs: Dict[str, Any] = {"model": model_name, "messages": messages}
+            if supports_temperature(model_name):
+                kwargs["temperature"] = temperature
+            if uses_max_completion_tokens(model_name):
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
+
+            response = await openai.ChatCompletion.acreate(**kwargs)
 
             response_time = time.time() - start_time
 
@@ -299,26 +310,27 @@ class LLMAPIClient:
         if not ANTHROPIC_AVAILABLE:
             return APIResponse(
                 provider=Provider.ANTHROPIC,
-                model=model or "claude-3-5-sonnet-20241022",
+                model=resolve_model_id(model, "anthropic"),
                 prompt=prompt,
                 response_text="",
                 response_time=0,
                 error="Anthropic SDK not installed"
             )
 
-        model_name = model or "claude-3-5-sonnet-20241022"
+        model_name = resolve_model_id(model, "anthropic")
         start_time = time.time()
 
         try:
-            message = await self.anthropic_client.messages.create(
-                model=model_name,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system=system_prompt or "",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            create_kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "max_tokens": max_tokens,
+                "system": system_prompt or "",
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if supports_temperature(model_name):
+                create_kwargs["temperature"] = temperature
+
+            message = await self.anthropic_client.messages.create(**create_kwargs)
 
             response_time = time.time() - start_time
 
@@ -370,30 +382,30 @@ class LLMAPIClient:
         if not GOOGLE_AVAILABLE:
             return APIResponse(
                 provider=Provider.GOOGLE,
-                model=model or "gemini-pro",
+                model=resolve_model_id(model, "gemini"),
                 prompt=prompt,
                 response_text="",
                 response_time=0,
                 error="Google Generative AI SDK not installed"
             )
 
-        model_name = model or "gemini-pro"
+        model_name = resolve_model_id(model, "gemini")
         start_time = time.time()
 
         try:
             gemini_model = genai.GenerativeModel(model_name)
 
-            # Combine system prompt and user prompt
             full_prompt = prompt
             if system_prompt:
                 full_prompt = f"{system_prompt}\n\n{prompt}"
 
+            gen_kwargs: Dict[str, Any] = {"max_output_tokens": max_tokens}
+            if supports_temperature(model_name):
+                gen_kwargs["temperature"] = temperature
+
             response = await gemini_model.generate_content_async(
                 full_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                )
+                generation_config=genai.types.GenerationConfig(**gen_kwargs),
             )
 
             response_time = time.time() - start_time
@@ -446,41 +458,19 @@ class LLMAPIClient:
             raise
 
     def _estimate_openai_cost(self, model: str, tokens: int) -> float:
-        """Estimate OpenAI API cost (USD)"""
+        """Estimate OpenAI cost when input/output split is unknown.
 
-        # Rough pricing (as of 2025)
-        pricing = {
-            "gpt-4o": 0.005 / 1000,  # $0.005 per 1K tokens
-            "gpt-4o-mini": 0.00015 / 1000,  # $0.00015 per 1K tokens
-            "gpt-4-turbo": 0.01 / 1000,
-            "gpt-4": 0.03 / 1000,
-            "gpt-3.5-turbo": 0.0005 / 1000,
-        }
-
-        for key, price in pricing.items():
-            if key in model:
-                return tokens * price
-
-        # Default estimate
-        return tokens * 0.002 / 1000
+        Approximates with the average of input/output rates from the
+        registry, since the OpenAI legacy `Completion.acreate` path does
+        not always surface token splits.
+        """
+        input_rate, output_rate = get_pricing(model)
+        avg_per_1k = (input_rate + output_rate) / 2 or 0.001
+        return (tokens / 1000) * avg_per_1k
 
     def _estimate_anthropic_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Estimate Anthropic API cost (USD)"""
-
-        # Rough pricing (as of 2025)
-        if "claude-3-5-sonnet" in model:
-            input_cost = input_tokens * (0.003 / 1000)
-            output_cost = output_tokens * (0.015 / 1000)
-            return input_cost + output_cost
-        elif "claude-3-haiku" in model:
-            input_cost = input_tokens * (0.00025 / 1000)
-            output_cost = output_tokens * (0.00125 / 1000)
-            return input_cost + output_cost
-        else:
-            # Default estimate
-            input_cost = input_tokens * (0.003 / 1000)
-            output_cost = output_tokens * (0.015 / 1000)
-            return input_cost + output_cost
+        input_rate, output_rate = get_pricing(model)
+        return (input_tokens / 1000) * input_rate + (output_tokens / 1000) * output_rate
 
     def get_cost_summary(self) -> Dict[str, Any]:
         """Get summary of API usage and costs"""

@@ -1,0 +1,29 @@
+# FortKnoxx backend — ML/AI dependencies (OPTIONAL).
+#
+# WHY separate: this stack is multi-GB and not all deployments need it.
+# Required only by:
+#   - engines.zero_day.ml_detector (GNN-based zero-day anomaly detection)
+#   - engines.logic.behavior_learner (sklearn IsolationForest)
+#   - CodeBERT-based semantic analysis
+#
+# When NOT installed, server.py degrades these features at import time
+# via ML_DETECTOR_AVAILABLE / FLOW_ANALYZER_AVAILABLE flags. Phase 5 of
+# the migration plan extracts these into a dedicated ai-engine-service
+# where the deps become mandatory and the silent-fallback path goes away.
+#
+# Install:  pip install -r requirements-base.txt -r requirements-ml.txt
+
+# Deep learning
+torch>=2.0.0,<3.0.0
+
+# Graph Neural Networks for code property graphs
+torch-geometric>=2.3.0,<3.0.0
+
+# Transformer models (CodeBERT)
+transformers>=4.30.0,<5.0.0
+
+# Classical ML (IsolationForest, etc.)
+scikit-learn>=1.3.0,<2.0.0
+
+# WHY no networkx here: pinned in requirements-base.txt to <3 because
+# checkov requires it. torch-geometric works fine with networkx 2.x.

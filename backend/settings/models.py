@@ -235,6 +235,17 @@ class ScannerSettings(BaseModel):
     enable_llm_security_scanner: bool = Field(default=True, description="LLM prompt injection testing")
     enable_auth_scanner: bool = Field(default=True, description="Authentication vulnerability scanner")
 
+    # Extended Coverage (added 2026-05)
+    enable_osv_scanner: bool = Field(default=True, description="osv-scanner - Multi-ecosystem CVE database")
+    enable_cyclonedx: bool = Field(default=True, description="CycloneDX - Compliance-grade SBOM")
+    enable_license_scanner: bool = Field(default=True, description="License compliance (copyleft detection)")
+    enable_schemathesis: bool = Field(default=False, description="Schemathesis - OpenAPI property-based fuzzing (requires base_url)")
+    enable_garak: bool = Field(default=False, description="garak - LLM red-team probes (requires model creds)")
+    enable_promptfoo: bool = Field(default=False, description="promptfoo - LLM prompt regression eval")
+    enable_prowler: bool = Field(default=False, description="Prowler - Cloud security audit (requires cloud creds)")
+    enable_kube_bench: bool = Field(default=False, description="kube-bench - K8s CIS benchmark")
+    enable_kube_hunter: bool = Field(default=False, description="kube-hunter - K8s runtime probing")
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -312,6 +323,17 @@ class UpdateScannerSettingsRequest(BaseModel):
     enable_business_logic_scanner: Optional[bool] = None
     enable_llm_security_scanner: Optional[bool] = None
     enable_auth_scanner: Optional[bool] = None
+
+    # Extended Coverage
+    enable_osv_scanner: Optional[bool] = None
+    enable_cyclonedx: Optional[bool] = None
+    enable_license_scanner: Optional[bool] = None
+    enable_schemathesis: Optional[bool] = None
+    enable_garak: Optional[bool] = None
+    enable_promptfoo: Optional[bool] = None
+    enable_prowler: Optional[bool] = None
+    enable_kube_bench: Optional[bool] = None
+    enable_kube_hunter: Optional[bool] = None
 
 
 class UpdateAIScannerSettingsRequest(BaseModel):

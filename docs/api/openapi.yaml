@@ -1,0 +1,2081 @@
+openapi: 3.1.0
+info:
+  title: FortKnoxx Security Intelligence Platform
+  description: 'Unified security scanning API: SAST, DAST, SCA, IaC, secrets, container, and AI-powered scanners (zero-day
+    GNN, business logic, LLM adversarial, auth).'
+  version: 1.0.0
+paths:
+  /api/:
+    get:
+      tags:
+      - health
+      summary: Root
+      operationId: root_api__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Root Api  Get
+  /api/health:
+    get:
+      tags:
+      - health
+      summary: Health Check
+      operationId: health_check_api_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Check Api Health Get
+  /api/scanners/health:
+    get:
+      tags:
+      - health
+      summary: Get Scanner Health
+      operationId: get_scanner_health_api_scanners_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Get Scanner Health Api Scanners Health Get
+  /api/repositories:
+    get:
+      tags:
+      - repositories
+      summary: List Repositories
+      operationId: list_repositories_api_repositories_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Repository'
+                type: array
+                title: Response List Repositories Api Repositories Get
+    post:
+      summary: Add Repository
+      description: Add a repository for scanning (supports both public repos and private repos with tokens)
+      operationId: add_repository_api_repositories_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddRepositoryRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/repositories/{repo_id}:
+    get:
+      tags:
+      - repositories
+      summary: Get Repository
+      operationId: get_repository_api_repositories__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Repository'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - repositories
+      summary: Delete Repository
+      operationId: delete_repository_api_repositories__repo_id__delete
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Delete Repository Api Repositories  Repo Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/scans/{repo_id}:
+    post:
+      summary: Start Scan
+      description: Start a security scan for a repository
+      operationId: start_scan_api_scans__repo_id__post
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - scans
+      summary: List Scans For Repo
+      operationId: list_scans_for_repo_api_scans__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Scan'
+                title: Response List Scans For Repo Api Scans  Repo Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/scans/detail/{scan_id}:
+    get:
+      tags:
+      - scans
+      summary: Get Scan
+      operationId: get_scan_api_scans_detail__scan_id__get
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scan'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/scans/{scan_id}:
+    delete:
+      tags:
+      - scans
+      summary: Delete Scan
+      operationId: delete_scan_api_scans__scan_id__delete
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Delete Scan Api Scans  Scan Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/vulnerabilities/{scan_id}:
+    get:
+      tags:
+      - findings
+      summary: List Vulnerabilities For Scan
+      operationId: list_vulnerabilities_for_scan_api_vulnerabilities__scan_id__get
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Vulnerability'
+                title: Response List Vulnerabilities For Scan Api Vulnerabilities  Scan Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/vulnerabilities/repo/{repo_id}:
+    get:
+      tags:
+      - findings
+      summary: List Vulnerabilities For Repo
+      operationId: list_vulnerabilities_for_repo_api_vulnerabilities_repo__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Vulnerability'
+                title: Response List Vulnerabilities For Repo Api Vulnerabilities Repo  Repo Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/{scan_id}:
+    get:
+      tags:
+      - findings
+      summary: List Quality Issues For Scan
+      operationId: list_quality_issues_for_scan_api_quality__scan_id__get
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Quality Issues For Scan Api Quality  Scan Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/repo/{repo_id}:
+    get:
+      tags:
+      - findings
+      summary: List Quality Issues For Repo
+      operationId: list_quality_issues_for_repo_api_quality_repo__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Quality Issues For Repo Api Quality Repo  Repo Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/summary/{scan_id}:
+    get:
+      tags:
+      - findings
+      summary: Quality Summary
+      operationId: quality_summary_api_quality_summary__scan_id__get
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Quality Summary Api Quality Summary  Scan Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/compliance/{scan_id}:
+    get:
+      tags:
+      - findings
+      summary: List Compliance Issues For Scan
+      operationId: list_compliance_issues_for_scan_api_compliance__scan_id__get
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Compliance Issues For Scan Api Compliance  Scan Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/compliance/repo/{repo_id}:
+    get:
+      tags:
+      - findings
+      summary: List Compliance Issues For Repo
+      operationId: list_compliance_issues_for_repo_api_compliance_repo__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Compliance Issues For Repo Api Compliance Repo  Repo Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/compliance/summary/{scan_id}:
+    get:
+      tags:
+      - findings
+      summary: Compliance Summary
+      operationId: compliance_summary_api_compliance_summary__scan_id__get
+      parameters:
+      - name: scan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Scan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Compliance Summary Api Compliance Summary  Scan Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/sbom/{repo_id}:
+    get:
+      tags:
+      - findings
+      summary: Get Sbom
+      operationId: get_sbom_api_sbom__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Sbom Api Sbom  Repo Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/ai/fix-recommendation:
+    post:
+      summary: Get Ai Fix Recommendation
+      description: Generate AI-powered fix recommendation for a vulnerability
+      operationId: get_ai_fix_recommendation_api_ai_fix_recommendation_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIFixRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/owasp/categories:
+    get:
+      summary: Get Owasp Categories
+      description: Get OWASP Top 10 categories
+      operationId: get_owasp_categories_api_owasp_categories_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/stats/{repo_id}:
+    get:
+      tags:
+      - stats
+      summary: Get Repository Stats
+      operationId: get_repository_stats_api_stats__repo_id__get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Repository Stats Api Stats  Repo Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/settings:
+    get:
+      tags:
+      - settings
+      summary: Get Settings
+      operationId: get_settings_api_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+  /api/settings/api-keys:
+    get:
+      tags:
+      - settings
+      summary: Get Api Keys Values
+      description: 'Return masked key values for the admin UI.
+
+
+        WARNING: only the first 8 characters of each key are returned;
+
+        full plaintext is never sent to the frontend.'
+      operationId: get_api_keys_values_api_settings_api_keys_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Get Api Keys Values Api Settings Api Keys Get
+    post:
+      tags:
+      - settings
+      summary: Update Api Keys
+      description: 'Encrypted store of LLM provider keys + scanner tokens.
+
+
+        Pass an empty string to delete a single key.'
+      operationId: update_api_keys_api_settings_api_keys_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAPIKeysRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Update Api Keys Api Settings Api Keys Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/settings/scanners:
+    get:
+      tags:
+      - settings
+      summary: Get Installed Scanners
+      description: "Which scanner binaries are reachable on PATH at this moment.\n\nIndependent of the persisted enable/disable\
+        \ state \u2014 useful for\nthe UI to show a red badge next to a scanner that is enabled in\nsettings but missing from\
+        \ the host. Persisted config lives at\n``GET /settings/scanners/config``."
+      operationId: get_installed_scanners_api_settings_scanners_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  additionalProperties: true
+                  type: object
+                type: object
+                title: Response Get Installed Scanners Api Settings Scanners Get
+    put:
+      tags:
+      - settings
+      summary: Update Scanner Config
+      operationId: update_scanner_config_api_settings_scanners_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateScannerSettingsRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Update Scanner Config Api Settings Scanners Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/settings/scanners/config:
+    get:
+      tags:
+      - settings
+      summary: Get Scanner Config
+      description: Persisted enable/disable state for all scanners.
+      operationId: get_scanner_config_api_settings_scanners_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScannerSettings'
+  /api/settings/ai-scanners:
+    get:
+      tags:
+      - settings
+      summary: Get Ai Scanner Settings
+      operationId: get_ai_scanner_settings_api_settings_ai_scanners_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIScannerSettings'
+    post:
+      tags:
+      - settings
+      summary: Update Ai Scanner Settings
+      operationId: update_ai_scanner_settings_api_settings_ai_scanners_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAIScannerSettingsRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Update Ai Scanner Settings Api Settings Ai Scanners Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/reports/generate:
+    post:
+      tags:
+      - reports
+      summary: Generate Report
+      operationId: generate_report_api_reports_generate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                title: Response Generate Report Api Reports Generate Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/scan-limits:
+    get:
+      summary: Get Current Scan Limits
+      description: 'Get current scan limits configuration.
+
+        These limits help handle large repositories efficiently.
+
+
+        Configure via environment variables:
+
+        - SCAN_MAX_FILES_AI: Max files for AI analysis (default: 500)
+
+        - SCAN_MAX_FILE_SIZE_KB: Max file size in KB (default: 500)
+
+        - SCAN_MAX_REPO_SIZE_MB: Max repo size warning threshold (default: 500)
+
+        - SCAN_SCANNER_TIMEOUT: Per-scanner timeout in seconds (default: 300)
+
+        - SCAN_AI_SCANNER_TIMEOUT: AI scanner timeout in seconds (default: 600)
+
+        - SCAN_CLONE_TIMEOUT: Git clone timeout in seconds (default: 600)
+
+        - SCAN_TOTAL_TIMEOUT: Total scan timeout in seconds (default: 3600)
+
+        - SCAN_MAX_VULNS_AI: Max vulnerabilities for AI analysis (default: 100)
+
+        - SCAN_LLM_BATCH_SIZE: LLM processing batch size (default: 10)
+
+        - SCAN_LLM_REQUEST_TIMEOUT: Per-LLM request timeout (default: 60)'
+      operationId: get_current_scan_limits_api_scan_limits_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/model/status:
+    get:
+      summary: Get Model Status
+      description: 'Get GNN model and update service status
+
+
+        Returns:
+
+        - Model version and loading status
+
+        - Update service status
+
+        - Feedback collection stats'
+      operationId: get_model_status_api_model_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/model/check-update:
+    post:
+      summary: Check Model Update
+      description: 'Manually trigger a model update check
+
+
+        This will:
+
+        1. Check the configured update source for new versions
+
+        2. Download and install if a newer version is available
+
+        3. Validate the new model before activation
+
+        4. Automatically rollback if validation fails'
+      operationId: check_model_update_api_model_check_update_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/model/feedback:
+    post:
+      summary: Submit Model Feedback
+      description: 'Submit feedback on model detection results
+
+
+        This feedback is used to improve future model versions.
+
+        It does NOT trigger immediate retraining.
+
+
+        - **file_path**: Path of the analyzed file
+
+        - **detected_vulns**: Vulnerabilities the model detected
+
+        - **confirmed_vulns**: Which detections were correct (true positives)
+
+        - **false_positives**: Which detections were wrong
+
+        - **missed_vulns**: Vulnerabilities the model should have found'
+      operationId: submit_model_feedback_api_model_feedback_post
+      parameters:
+      - name: file_path
+        in: query
+        required: true
+        schema:
+          type: string
+          title: File Path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_submit_model_feedback_api_model_feedback_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/git:
+    get:
+      tags:
+      - integrations
+      summary: List Integrations
+      operationId: list_integrations_api_integrations_git_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items:
+                    additionalProperties: true
+                    type: object
+                  type: array
+                type: object
+                title: Response List Integrations Api Integrations Git Get
+  /api/integrations/git/connect:
+    post:
+      tags:
+      - integrations
+      summary: Connect Integration
+      operationId: connect_integration_api_integrations_git_connect_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectGitIntegrationRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Connect Integration Api Integrations Git Connect Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/git/{provider}:
+    delete:
+      tags:
+      - integrations
+      summary: Disconnect Integration
+      operationId: disconnect_integration_api_integrations_git__provider__delete
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider
+      - name: name
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Disconnect Integration Api Integrations Git  Provider  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/git/{provider}/repositories:
+    get:
+      tags:
+      - integrations
+      summary: List Remote Repositories
+      operationId: list_remote_repositories_api_integrations_git__provider__repositories_get
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: per_page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 30
+          title: Per Page
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Remote Repositories Api Integrations Git  Provider  Repositories Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/repositories/{repo_id}/unified-scan:
+    post:
+      summary: Unified Scan Repository
+      description: Run comprehensive unified security scan with all AI-powered scanners
+      operationId: unified_scan_repository_api_repositories__repo_id__unified_scan_post
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnifiedScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/repositories/{repo_id}/latest-scan:
+    get:
+      summary: Get Latest Scan
+      description: Get latest unified scan results for a repository
+      operationId: get_latest_scan_api_repositories__repo_id__latest_scan_get
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/repositories/{repo_id}/scan:
+    post:
+      summary: Scan Repository
+      description: Clone and scan a repository (legacy endpoint)
+      operationId: scan_repository_api_repositories__repo_id__scan_post
+      parameters:
+      - name: repo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repo Id
+      - name: branch
+        in: query
+        required: false
+        schema:
+          type: string
+          title: Branch
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    AIFixRequest:
+      properties:
+        vulnerability_id:
+          type: string
+          title: Vulnerability Id
+        provider:
+          type: string
+          title: Provider
+          default: anthropic
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+      type: object
+      required:
+      - vulnerability_id
+      title: AIFixRequest
+    AIScannerSettings:
+      properties:
+        enable_zero_day_detector:
+          type: boolean
+          title: Enable Zero Day Detector
+          description: Enable ML-based zero-day detection
+          default: true
+        enable_business_logic_scanner:
+          type: boolean
+          title: Enable Business Logic Scanner
+          description: Enable business logic flaw detection
+          default: true
+        enable_llm_security_scanner:
+          type: boolean
+          title: Enable Llm Security Scanner
+          description: Enable LLM prompt injection testing
+          default: true
+        enable_auth_scanner:
+          type: boolean
+          title: Enable Auth Scanner
+          description: Enable authentication vulnerability scanner
+          default: true
+      type: object
+      title: AIScannerSettings
+      description: 'DEPRECATED: Use ScannerSettings instead. Kept for backwards compatibility.'
+      example:
+        enable_auth_scanner: false
+        enable_business_logic_scanner: true
+        enable_llm_security_scanner: true
+        enable_zero_day_detector: true
+    AddRepositoryRequest:
+      properties:
+        provider:
+          $ref: '#/components/schemas/GitProvider'
+        repo_url:
+          type: string
+          title: Repo Url
+          description: Repository URL (e.g., https://github.com/owner/repo)
+        auto_scan:
+          type: boolean
+          title: Auto Scan
+          description: Enable auto-scan on push
+          default: false
+        branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Branch
+          description: Branch to scan (defaults to default branch)
+        access_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Access Token
+          description: Access token for private repos (optional for public repos)
+        is_public:
+          type: boolean
+          title: Is Public
+          description: Whether this is a public repository (no token required)
+          default: false
+      type: object
+      required:
+      - provider
+      - repo_url
+      title: AddRepositoryRequest
+      description: Request model for adding a repository to scan
+      example:
+        auto_scan: true
+        branch: main
+        is_public: true
+        provider: github
+        repo_url: https://github.com/myorg/myrepo
+    Body_submit_model_feedback_api_model_feedback_post:
+      properties:
+        detected_vulns:
+          items:
+            type: string
+          type: array
+          title: Detected Vulns
+        confirmed_vulns:
+          items:
+            type: string
+          type: array
+          title: Confirmed Vulns
+          default: []
+        false_positives:
+          items:
+            type: string
+          type: array
+          title: False Positives
+          default: []
+        missed_vulns:
+          items:
+            type: string
+          type: array
+          title: Missed Vulns
+          default: []
+      type: object
+      required:
+      - detected_vulns
+      title: Body_submit_model_feedback_api_model_feedback_post
+    ConnectGitIntegrationRequest:
+      properties:
+        provider:
+          $ref: '#/components/schemas/GitProvider'
+        name:
+          type: string
+          title: Name
+          description: Display name for this integration
+        access_token:
+          type: string
+          title: Access Token
+          description: Personal access token
+        base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Url
+          description: Base URL for self-hosted (e.g., https://gitlab.company.com)
+      type: object
+      required:
+      - provider
+      - name
+      - access_token
+      title: ConnectGitIntegrationRequest
+      description: Request model for connecting a Git provider
+      example:
+        access_token: ghp_xxxxxxxxxxxx
+        name: My GitHub Account
+        provider: github
+    GitIntegrationStatus:
+      properties:
+        provider:
+          $ref: '#/components/schemas/GitProvider'
+        name:
+          type: string
+          title: Name
+        is_connected:
+          type: boolean
+          title: Is Connected
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Url
+        has_webhook:
+          type: boolean
+          title: Has Webhook
+          default: false
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - provider
+      - name
+      - is_connected
+      title: GitIntegrationStatus
+      description: Status of a Git integration (without sensitive data)
+    GitProvider:
+      type: string
+      enum:
+      - github
+      - gitlab
+      title: GitProvider
+      description: Supported Git providers
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ReportRequest:
+      properties:
+        repo_id:
+          type: string
+          title: Repo Id
+        scan_id:
+          type: string
+          title: Scan Id
+        format:
+          type: string
+          title: Format
+          default: json
+      type: object
+      required:
+      - repo_id
+      - scan_id
+      title: ReportRequest
+    Repository:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        url:
+          type: string
+          title: Url
+        access_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Access Token
+        branch:
+          type: string
+          title: Branch
+          default: main
+        last_scan:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Scan
+        scan_status:
+          type: string
+          title: Scan Status
+          default: pending
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        security_score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Security Score
+        vulnerabilities_count:
+          type: integer
+          title: Vulnerabilities Count
+          default: 0
+        critical_count:
+          type: integer
+          title: Critical Count
+          default: 0
+        high_count:
+          type: integer
+          title: High Count
+          default: 0
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+      type: object
+      required:
+      - name
+      - url
+      title: Repository
+    Scan:
+      properties:
+        id:
+          type: string
+          title: Id
+        repo_id:
+          type: string
+          title: Repo Id
+        status:
+          type: string
+          title: Status
+          default: pending
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+        total_files:
+          type: integer
+          title: Total Files
+          default: 0
+        vulnerabilities_count:
+          type: integer
+          title: Vulnerabilities Count
+          default: 0
+        quality_issues_count:
+          type: integer
+          title: Quality Issues Count
+          default: 0
+        compliance_issues_count:
+          type: integer
+          title: Compliance Issues Count
+          default: 0
+        critical_count:
+          type: integer
+          title: Critical Count
+          default: 0
+        high_count:
+          type: integer
+          title: High Count
+          default: 0
+        medium_count:
+          type: integer
+          title: Medium Count
+          default: 0
+        low_count:
+          type: integer
+          title: Low Count
+          default: 0
+        security_score:
+          type: integer
+          title: Security Score
+          default: 0
+        quality_score:
+          type: integer
+          title: Quality Score
+          default: 100
+        compliance_score:
+          type: integer
+          title: Compliance Score
+          default: 100
+        scan_results:
+          additionalProperties: true
+          type: object
+          title: Scan Results
+      type: object
+      required:
+      - repo_id
+      title: Scan
+    ScannerSettings:
+      properties:
+        enable_semgrep:
+          type: boolean
+          title: Enable Semgrep
+          description: Semgrep - Multi-language SAST
+          default: true
+        enable_bandit:
+          type: boolean
+          title: Enable Bandit
+          description: Bandit - Python security scanner
+          default: true
+        enable_gitleaks:
+          type: boolean
+          title: Enable Gitleaks
+          description: Gitleaks - Secret detection
+          default: true
+        enable_trufflehog:
+          type: boolean
+          title: Enable Trufflehog
+          description: TruffleHog - Secret scanning
+          default: true
+        enable_trivy:
+          type: boolean
+          title: Enable Trivy
+          description: Trivy - Vulnerability scanner
+          default: true
+        enable_grype:
+          type: boolean
+          title: Enable Grype
+          description: Grype - Vulnerability detection
+          default: true
+        enable_checkov:
+          type: boolean
+          title: Enable Checkov
+          description: Checkov - IaC security
+          default: true
+        enable_eslint:
+          type: boolean
+          title: Enable Eslint
+          description: ESLint - JavaScript/TypeScript security
+          default: true
+        enable_pylint:
+          type: boolean
+          title: Enable Pylint
+          description: Pylint - Python quality
+          default: true
+        enable_flake8:
+          type: boolean
+          title: Enable Flake8
+          description: Flake8 - Python style
+          default: true
+        enable_radon:
+          type: boolean
+          title: Enable Radon
+          description: Radon - Complexity analysis
+          default: true
+        enable_shellcheck:
+          type: boolean
+          title: Enable Shellcheck
+          description: ShellCheck - Shell script analysis
+          default: true
+        enable_hadolint:
+          type: boolean
+          title: Enable Hadolint
+          description: Hadolint - Dockerfile linter
+          default: true
+        enable_sqlfluff:
+          type: boolean
+          title: Enable Sqlfluff
+          description: SQLFluff - SQL linter
+          default: true
+        enable_pydeps:
+          type: boolean
+          title: Enable Pydeps
+          description: Pydeps - Dependency analysis
+          default: true
+        enable_pip_audit:
+          type: boolean
+          title: Enable Pip Audit
+          description: pip-audit - Python dependency audit
+          default: true
+        enable_npm_audit:
+          type: boolean
+          title: Enable Npm Audit
+          description: npm-audit - Node.js dependency audit
+          default: true
+        enable_syft:
+          type: boolean
+          title: Enable Syft
+          description: Syft - SBOM generation
+          default: true
+        enable_nuclei:
+          type: boolean
+          title: Enable Nuclei
+          description: Nuclei - CVE template scanner
+          default: true
+        enable_codeql:
+          type: boolean
+          title: Enable Codeql
+          description: CodeQL - Semantic analysis (requires setup)
+          default: false
+        enable_snyk:
+          type: boolean
+          title: Enable Snyk
+          description: Snyk - Modern dependency scanner
+          default: true
+        enable_gosec:
+          type: boolean
+          title: Enable Gosec
+          description: Gosec - Go security
+          default: true
+        enable_spotbugs:
+          type: boolean
+          title: Enable Spotbugs
+          description: SpotBugs - Java bytecode analysis
+          default: true
+        enable_pyre:
+          type: boolean
+          title: Enable Pyre
+          description: Pyre - Python type checker
+          default: true
+        enable_horusec:
+          type: boolean
+          title: Enable Horusec
+          description: Horusec - Multi-language SAST
+          default: true
+        enable_zap:
+          type: boolean
+          title: Enable Zap
+          description: OWASP ZAP - Web security patterns (static)
+          default: true
+        enable_zap_dast:
+          type: boolean
+          title: Enable Zap Dast
+          description: OWASP ZAP DAST - Dynamic scanning (requires Docker)
+          default: false
+        enable_api_fuzzer:
+          type: boolean
+          title: Enable Api Fuzzer
+          description: API Fuzzer - Dedicated API security testing
+          default: true
+        enable_zero_day_detector:
+          type: boolean
+          title: Enable Zero Day Detector
+          description: ML-based zero-day detection
+          default: true
+        enable_business_logic_scanner:
+          type: boolean
+          title: Enable Business Logic Scanner
+          description: Business logic flaw detection
+          default: true
+        enable_llm_security_scanner:
+          type: boolean
+          title: Enable Llm Security Scanner
+          description: LLM prompt injection testing
+          default: true
+        enable_auth_scanner:
+          type: boolean
+          title: Enable Auth Scanner
+          description: Authentication vulnerability scanner
+          default: true
+      type: object
+      title: ScannerSettings
+      description: Settings for all security scanners - user can enable/disable each scanner
+      example:
+        enable_api_fuzzer: true
+        enable_bandit: true
+        enable_semgrep: true
+        enable_zap_dast: false
+        enable_zero_day_detector: true
+    SettingsResponse:
+      properties:
+        llm_api_keys:
+          additionalProperties:
+            type: boolean
+          type: object
+          title: Llm Api Keys
+          description: 'Status of LLM API keys (key: is_set)'
+        scanner_settings:
+          anyOf:
+          - $ref: '#/components/schemas/ScannerSettings'
+          - type: 'null'
+          description: All scanner enable/disable settings
+        ai_scanner_settings:
+          additionalProperties:
+            type: boolean
+          type: object
+          title: Ai Scanner Settings
+          description: 'DEPRECATED: Use scanner_settings instead'
+        scanner_config:
+          additionalProperties: true
+          type: object
+          title: Scanner Config
+          description: Scanner configurations
+        system:
+          additionalProperties: true
+          type: object
+          title: System
+          description: System settings
+        git_integrations:
+          items:
+            $ref: '#/components/schemas/GitIntegrationStatus'
+          type: array
+          title: Git Integrations
+          description: Connected Git provider integrations
+      type: object
+      title: SettingsResponse
+      description: Response model for settings API
+      example:
+        git_integrations:
+        - has_webhook: true
+          is_connected: true
+          name: My GitHub
+          provider: github
+          username: myorg
+        llm_api_keys:
+          anthropic_api_key: false
+          gemini_api_key: true
+          github_token: true
+          openai_api_key: true
+          snyk_token: false
+        scanner_config: {}
+        system: {}
+    UnifiedScanRequest:
+      properties:
+        enable_zero_day:
+          type: boolean
+          title: Enable Zero Day
+          default: true
+        enable_business_logic:
+          type: boolean
+          title: Enable Business Logic
+          default: true
+        enable_llm_security:
+          type: boolean
+          title: Enable Llm Security
+          default: true
+        enable_auth_scanner:
+          type: boolean
+          title: Enable Auth Scanner
+          default: true
+        enable_codeql:
+          type: boolean
+          title: Enable Codeql
+          default: true
+        enable_docker:
+          type: boolean
+          title: Enable Docker
+          default: false
+        enable_iac:
+          type: boolean
+          title: Enable Iac
+          default: false
+        enable_runtime_testing:
+          type: boolean
+          title: Enable Runtime Testing
+          default: false
+        base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Url
+        auth_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auth Token
+        openai_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Openai Api Key
+        anthropic_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Anthropic Api Key
+        docker_images:
+          items:
+            type: string
+          type: array
+          title: Docker Images
+          default: []
+        terraform_dirs:
+          items:
+            type: string
+          type: array
+          title: Terraform Dirs
+          default: []
+        kubernetes_dirs:
+          items:
+            type: string
+          type: array
+          title: Kubernetes Dirs
+          default: []
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Language
+      type: object
+      title: UnifiedScanRequest
+      description: Request model for unified comprehensive scan
+    UpdateAIScannerSettingsRequest:
+      properties:
+        enable_zero_day_detector:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Zero Day Detector
+        enable_business_logic_scanner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Business Logic Scanner
+        enable_llm_security_scanner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Llm Security Scanner
+        enable_auth_scanner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Auth Scanner
+      type: object
+      title: UpdateAIScannerSettingsRequest
+      description: 'DEPRECATED: Use UpdateScannerSettingsRequest instead. Kept for backwards compatibility.'
+    UpdateAPIKeysRequest:
+      properties:
+        openai_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Openai Api Key
+        anthropic_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Anthropic Api Key
+        gemini_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Gemini Api Key
+        github_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Github Token
+        snyk_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Snyk Token
+      type: object
+      title: UpdateAPIKeysRequest
+      description: Request model for updating API keys
+      example:
+        anthropic_api_key: sk-ant-...
+        gemini_api_key: AI...
+        github_token: ghp_...
+        openai_api_key: sk-...
+        snyk_token: '...'
+    UpdateScannerSettingsRequest:
+      properties:
+        enable_semgrep:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Semgrep
+        enable_bandit:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Bandit
+        enable_gitleaks:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Gitleaks
+        enable_trufflehog:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Trufflehog
+        enable_trivy:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Trivy
+        enable_grype:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Grype
+        enable_checkov:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Checkov
+        enable_eslint:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Eslint
+        enable_pylint:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Pylint
+        enable_flake8:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Flake8
+        enable_radon:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Radon
+        enable_shellcheck:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Shellcheck
+        enable_hadolint:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Hadolint
+        enable_sqlfluff:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Sqlfluff
+        enable_pydeps:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Pydeps
+        enable_pip_audit:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Pip Audit
+        enable_npm_audit:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Npm Audit
+        enable_syft:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Syft
+        enable_nuclei:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Nuclei
+        enable_codeql:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Codeql
+        enable_snyk:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Snyk
+        enable_gosec:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Gosec
+        enable_spotbugs:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Spotbugs
+        enable_pyre:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Pyre
+        enable_horusec:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Horusec
+        enable_zap:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Zap
+        enable_zap_dast:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Zap Dast
+        enable_api_fuzzer:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Api Fuzzer
+        enable_zero_day_detector:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Zero Day Detector
+        enable_business_logic_scanner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Business Logic Scanner
+        enable_llm_security_scanner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Llm Security Scanner
+        enable_auth_scanner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enable Auth Scanner
+      type: object
+      title: UpdateScannerSettingsRequest
+      description: Request model for updating scanner settings - any scanner can be enabled/disabled
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    Vulnerability:
+      properties:
+        id:
+          type: string
+          title: Id
+        repo_id:
+          type: string
+          title: Repo Id
+        scan_id:
+          type: string
+          title: Scan Id
+        file_path:
+          type: string
+          title: File Path
+        line_start:
+          type: integer
+          title: Line Start
+        line_end:
+          type: integer
+          title: Line End
+        severity:
+          type: string
+          title: Severity
+        category:
+          type: string
+          title: Category
+        owasp_category:
+          type: string
+          title: Owasp Category
+        title:
+          type: string
+          title: Title
+        description:
+          type: string
+          title: Description
+        code_snippet:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code Snippet
+          default: ''
+        cwe:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cwe
+        cvss_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cvss Score
+        fix_recommendation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fix Recommendation
+        detected_by:
+          type: string
+          title: Detected By
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - repo_id
+      - scan_id
+      - file_path
+      - line_start
+      - line_end
+      - severity
+      - category
+      - owasp_category
+      - title
+      - description
+      - detected_by
+      title: Vulnerability

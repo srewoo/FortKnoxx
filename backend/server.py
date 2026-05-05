@@ -167,12 +167,24 @@ async def lifespan(app: FastAPI):
     git_integration_service.set_encryption(encryption_service)
     logger.info("Git integration service initialized")
 
+    # Publish singletons to api.deps for the route modules. Done after
+    # the managers are wired up but before scanner health runs so any
+    # extracted health route can read state during startup probes.
+    api_deps.bind(
+        db=db,
+        client=client,
+        settings_manager=settings_manager,
+        git_integration_service=git_integration_service,
+        encryption_service=encryption_service,
+    )
+
     # Run scanner health check at startup
     logger.info("Running scanner health check...")
     try:
         scanner_settings = await settings_manager.get_scanner_settings()
         _scanner_health_report = await check_all_scanners(scanner_settings)
         log_scanner_health_report(_scanner_health_report)
+        api_deps.bind(scanner_health_report=_scanner_health_report)
 
         if _scanner_health_report.unavailable_count > 0:
             logger.warning(
@@ -222,15 +234,49 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"GNN Model Manager initialization skipped: {e}")
 
+    # Phase 2: Postgres engine (lazy, optional).
+    # `db_client.get_engine()` reads POSTGRES_DSN from env. We swallow
+    # the configuration error so existing Mongo-only deployments keep
+    # working — Phase 2 is opt-in until the request path actually
+    # depends on Postgres tables.
+    pg_engine_loaded = False
+    if os.environ.get("POSTGRES_DSN"):
+        try:
+            from db_client import get_engine
+
+            get_engine()  # eager-init pool so request-path latency is unaffected
+            pg_engine_loaded = True
+            logger.info("Postgres engine initialised (Phase 2)")
+        except Exception as exc:  # noqa: BLE001 — Phase 2 is optional today.
+            logger.warning("Postgres engine init skipped: %s", exc)
+    else:
+        logger.info("POSTGRES_DSN not set; Phase 2 (Postgres) inactive — Mongo path only.")
+
     yield
 
-    # Shutdown: Stop update service and close MongoDB connection
+    # Shutdown: stop update service, dispose Postgres pool, close Mongo.
     if update_service:
         await update_service.stop()
+    if pg_engine_loaded:
+        try:
+            from db_client import dispose_engine
+
+            await dispose_engine()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Postgres dispose failed: %s", exc)
     client.close()
 
 # Create the main app without a prefix
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="FortKnoxx Security Intelligence Platform",
+    description=(
+        "Unified security scanning API: SAST, DAST, SCA, IaC, secrets, "
+        "container, and AI-powered scanners (zero-day GNN, business "
+        "logic, LLM adversarial, auth)."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -243,118 +289,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # OWASP Top 10 Mapping
-OWASP_CATEGORIES = {
-    "A01": "Broken Access Control",
-    "A02": "Cryptographic Failures",
-    "A03": "Injection",
-    "A04": "Insecure Design",
-    "A05": "Security Misconfiguration",
-    "A06": "Vulnerable and Outdated Components",
-    "A07": "Identification and Authentication Failures",
-    "A08": "Software and Data Integrity Failures",
-    "A09": "Security Logging and Monitoring Failures",
-    "A10": "Server-Side Request Forgery"
-}
+# OWASP categories live in services.owasp (Phase 1.5).
+from services.owasp import OWASP_CATEGORIES
 
 # Define Models
-class Repository(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    url: str
-    access_token: Optional[str] = None  # Optional - Git Integration repos use integration token
-    branch: str = "main"
-    last_scan: Optional[str] = None
-    scan_status: str = "pending"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    # Security metrics from latest scan
-    security_score: Optional[int] = None
-    vulnerabilities_count: int = 0
-    critical_count: int = 0
-    high_count: int = 0
-    # Git Integration fields
-    provider: Optional[str] = None
-    full_name: Optional[str] = None
-
-class RepositoryCreate(BaseModel):
-    name: str
-    url: str
-    access_token: str
-    branch: str = "main"
-
-class Vulnerability(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    repo_id: str
-    scan_id: str
-    file_path: str
-    line_start: int
-    line_end: int
-    severity: str
-    category: str
-    owasp_category: str
-    title: str
-    description: str
-    code_snippet: Optional[str] = ""
-    cwe: Optional[str] = None
-    cvss_score: Optional[float] = None
-    fix_recommendation: Optional[str] = None
-    detected_by: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    @field_validator('cwe', mode='before')
-    @classmethod
-    def normalize_cwe(cls, v):
-        """Convert CWE list to string if needed"""
-        if isinstance(v, list):
-            return v[0] if v else None
-        return v
-
-    @field_validator('severity', mode='before')
-    @classmethod
-    def normalize_severity(cls, v):
-        """Convert severity list to string if needed"""
-        if isinstance(v, list):
-            return v[0] if v else "medium"
-        return v
-
-    @field_validator('file_path', mode='before')
-    @classmethod
-    def normalize_file_path(cls, v):
-        """Convert file_path list to string if needed"""
-        if isinstance(v, list):
-            return v[0] if v else ""
-        return v
-
-class Scan(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    repo_id: str
-    status: str = "pending"
-    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    completed_at: Optional[datetime] = None
-    total_files: int = 0
-    vulnerabilities_count: int = 0
-    quality_issues_count: int = 0
-    compliance_issues_count: int = 0
-    critical_count: int = 0
-    high_count: int = 0
-    medium_count: int = 0
-    low_count: int = 0
-    security_score: int = 0
-    quality_score: int = 100
-    compliance_score: int = 100
-    scan_results: Dict[str, Any] = Field(default_factory=dict)
-
-class AIFixRequest(BaseModel):
-    vulnerability_id: str
-    provider: str = "anthropic"
-    model: str = "claude-3-7-sonnet-20250219"  # Default to Claude Sonnet 3.7
-
-class ReportRequest(BaseModel):
-    repo_id: str
-    scan_id: str
-    format: str = "json"
+# Schemas live in api.schemas now (Phase 1 decomposition). Re-exported
+# here so the rest of server.py keeps working without changes.
+from api.schemas import (
+    AIFixRequest,
+    ReportRequest,
+    Repository,
+    RepositoryCreate,
+    Scan,
+    Vulnerability,
+)
+from api import deps as api_deps
+from services.result_safety import safe_findings
 
 # NOTE: APIKeysUpdate removed - duplicate of UpdateAPIKeysRequest from settings.models
 
@@ -548,130 +498,15 @@ async def run_checkov_scan(repo_path: str) -> List[Dict]:
         logger.error(f"Checkov scan error: {str(e)}")
         return []
 
-def map_to_owasp(category: str, title: str, description: str) -> str:
-    """Map vulnerability to OWASP Top 10 category"""
-    category_lower = category.lower()
-    title_lower = title.lower()
-    desc_lower = description.lower()
-    
-    # Mapping logic
-    if any(word in category_lower or word in title_lower for word in ["access", "authorization", "permission", "privilege"]):
-        return "A01"
-    elif any(word in category_lower or word in title_lower for word in ["crypto", "encryption", "hash", "password", "secret"]):
-        return "A02"
-    elif any(word in category_lower or word in title_lower for word in ["injection", "sql", "xss", "command", "ldap", "xpath"]):
-        return "A03"
-    elif any(word in category_lower or word in title_lower for word in ["design", "logic", "business"]):
-        return "A04"
-    elif any(word in category_lower or word in title_lower for word in ["config", "default", "debug", "error"]):
-        return "A05"
-    elif any(word in category_lower or word in title_lower for word in ["dependency", "component", "library", "cve", "outdated"]):
-        return "A06"
-    elif any(word in category_lower or word in title_lower for word in ["auth", "session", "token", "credential"]):
-        return "A07"
-    elif any(word in category_lower or word in title_lower for word in ["integrity", "deserialization", "update"]):
-        return "A08"
-    elif any(word in category_lower or word in title_lower for word in ["log", "monitor", "audit"]):
-        return "A09"
-    elif any(word in category_lower or word in title_lower for word in ["ssrf", "request forgery"]):
-        return "A10"
-    else:
-        return "A05"  # Default to misconfiguration
+# Severity / OWASP normalisation moved to services.normalisation (Phase 1.5).
+from services.normalisation import map_to_owasp, normalize_severity  # noqa: E402,F401
 
-def calculate_security_score(critical: int, high: int, medium: int, low: int) -> int:
-    """Calculate overall security score (0-100)"""
-    # If no vulnerabilities, perfect score
-    total_vulns = critical + high + medium + low
-    if total_vulns == 0:
-        return 100
-
-    # Weighted scoring with diminishing returns
-    # Critical: -15 points each
-    # High: -8 points each
-    # Medium: -3 points each
-    # Low: -1 point each
-    total_impact = (critical * 15) + (high * 8) + (medium * 3) + (low * 1)
-
-    # Calculate score (capped at 0 minimum)
-    score = max(0, 100 - total_impact)
-
-    # Apply additional penalty for having many vulnerabilities
-    if total_vulns > 20:
-        score = max(0, score - 5)
-    if total_vulns > 50:
-        score = max(0, score - 10)
-    if total_vulns > 100:
-        score = max(0, score - 15)
-
-    return score
-
-
-def calculate_quality_score(quality_issues: List[Dict]) -> int:
-    """Calculate code quality score (0-100)"""
-    if not quality_issues:
-        return 100
-
-    # Count by severity
-    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for issue in quality_issues:
-        severity = issue.get("severity", "low").lower()
-        if severity in severity_counts:
-            severity_counts[severity] += 1
-
-    # Weighted deductions (less severe than security issues)
-    # Critical: -10 points each
-    # High: -5 points each
-    # Medium: -2 points each
-    # Low: -0.5 point each
-    total_impact = (
-        severity_counts["critical"] * 10 +
-        severity_counts["high"] * 5 +
-        severity_counts["medium"] * 2 +
-        severity_counts["low"] * 0.5
-    )
-
-    score = max(0, 100 - total_impact)
-
-    # Additional penalty for many issues
-    total_issues = len(quality_issues)
-    if total_issues > 50:
-        score = max(0, score - 5)
-    if total_issues > 100:
-        score = max(0, score - 10)
-    if total_issues > 200:
-        score = max(0, score - 15)
-
-    return int(score)
-
-
-def calculate_compliance_score(compliance_issues: List[Dict]) -> int:
-    """Calculate license compliance score (0-100)"""
-    if not compliance_issues:
-        return 100
-
-    # Count license risk levels
-    risk_counts = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
-    for issue in compliance_issues:
-        risk = issue.get("license_risk", "unknown").lower()
-        if risk in risk_counts:
-            risk_counts[risk] += 1
-        else:
-            risk_counts["unknown"] += 1
-
-    # Weighted deductions
-    # High risk (GPL, AGPL): -15 points each
-    # Medium risk (MPL, EPL): -5 points each
-    # Low risk (MIT, Apache): 0 points
-    # Unknown: -3 points each
-    total_impact = (
-        risk_counts["high"] * 15 +
-        risk_counts["medium"] * 5 +
-        risk_counts["unknown"] * 3
-    )
-
-    score = max(0, 100 - total_impact)
-
-    return int(score)
+# Score calculations live in services.scoring (Phase 1.5).
+from services.scoring import (
+    calculate_compliance_score,
+    calculate_quality_score,
+    calculate_security_score,
+)
 
 async def process_scan_with_timeout(repo_id: str, scan_id: str, repo_path: str):
     """
@@ -770,14 +605,8 @@ async def run_scanner_with_tracking(
 async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
     """Process all scan results and store vulnerabilities"""
 
-    def normalize_severity(severity_value, default="medium"):
-        """Normalize severity value (handle string, list, or other types)"""
-        if isinstance(severity_value, list):
-            return severity_value[0].lower() if severity_value else default
-        elif isinstance(severity_value, str):
-            return severity_value.lower()
-        else:
-            return default
+    # `normalize_severity` and `map_to_owasp` are imported at module
+    # level from services.normalisation — no inline shadowing needed.
 
     # Initialize execution report for tracking scanner success/failure
     execution_report = ScanExecutionReport(scan_id=scan_id)
@@ -1185,295 +1014,51 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         else:
             logger.info("Auth Scanner: Disabled in settings")
 
-        vulnerabilities = []
-        quality_issues = []
-        compliance_issues = []
-        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-        
-        # Process Semgrep results
-        for finding in semgrep_results:
-            severity = normalize_severity(finding.get("extra", {}).get("severity", "medium"))
-            category = finding.get("check_id", "unknown")
-            
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=finding.get("path", "unknown"),
-                line_start=finding.get("start", {}).get("line", 0),
-                line_end=finding.get("end", {}).get("line", 0),
-                severity=severity,
-                category=category,
-                owasp_category=map_to_owasp(category, finding.get("extra", {}).get("message", ""), ""),
-                title=finding.get("extra", {}).get("message", "Security Issue"),
-                description=finding.get("extra", {}).get("message", ""),
-                code_snippet=finding.get("extra", {}).get("lines", ""),
-                detected_by="Semgrep"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        
-        # Process Gitleaks results
-        for secret in gitleaks_results:
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=secret.get("File", "unknown"),
-                line_start=secret.get("StartLine", 0),
-                line_end=secret.get("EndLine", 0),
-                severity="critical",
-                category="secret-exposure",
-                owasp_category="A02",
-                title=f"Secret Detected: {secret.get('Description', 'Unknown')}",
-                description=f"Secret found: {secret.get('Secret', '')[:20]}...",
-                code_snippet=secret.get("Secret", "")[:50],
-                detected_by="Gitleaks"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts["critical"] += 1
-        
-        # Process Trivy results
-        for dep in trivy_results:
-            severity = normalize_severity(dep.get("Severity", "MEDIUM"))
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=dep.get("PkgName", "dependency"),
-                line_start=0,
-                line_end=0,
-                severity=severity,
-                category="vulnerable-dependency",
-                owasp_category="A06",
-                title=dep.get("Title", "Vulnerable Dependency"),
-                description=dep.get("Description", ""),
-                code_snippet=f"{dep.get('PkgName', '')}@{dep.get('InstalledVersion', '')}",
-                cwe=dep.get("CweIDs", [""])[0] if dep.get("CweIDs") else None,
-                cvss_score=dep.get("CVSS", {}).get("nvd", {}).get("V3Score"),
-                detected_by="Trivy"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        
-        # Process Checkov results
-        for check in checkov_results:
-            severity = normalize_severity(check.get("check_result", {}).get("result", {}).get("severity", "MEDIUM"))
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=check.get("file_path", "unknown"),
-                line_start=check.get("file_line_range", [0, 0])[0],
-                line_end=check.get("file_line_range", [0, 0])[1],
-                severity=severity,
-                category="iac-misconfiguration",
-                owasp_category="A05",
-                title=check.get("check_name", "IaC Misconfiguration"),
-                description=check.get("check_result", {}).get("result", {}).get("evaluated_keys", [""])[0],
-                code_snippet="",
-                detected_by="Checkov"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        # Aggregate scanner results.
+        # ScanAggregator owns the per-finding state (vulnerabilities,
+        # quality_issues, compliance_issues, severity_counts) and has
+        # one method per scanner. The class lives in
+        # services/scan_aggregator.py and is unit-tested independently.
+        from services.scan_aggregator import ScanAggregator
 
-        # Process Bandit results (Python security)
-        for finding in bandit_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "medium"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        aggregator = ScanAggregator(repo_id=repo_id, scan_id=scan_id)
 
-        # Process TruffleHog results (secret detection)
-        for finding in trufflehog_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "critical"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        # Structured-output scanners.
+        aggregator.add_semgrep(semgrep_results)
+        aggregator.add_gitleaks(gitleaks_results)
+        aggregator.add_trivy(trivy_results)
+        aggregator.add_checkov(checkov_results)
 
-        # Process Grype results (dependency vulnerabilities)
-        for finding in grype_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "medium"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-
-        # Process ESLint results (JavaScript/TypeScript security)
-        for finding in eslint_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "medium"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-
-        # Process quality scanner results (including new enhanced scanners)
-        for finding in (pylint_results + flake8_results + radon_results + shellcheck_results +
-                       hadolint_results + sqlfluff_results + pydeps_results):
-            quality_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc),
-                "issue_type": "quality"
-            }
-            quality_issues.append(quality_dict)
-
-        # Process Nuclei configuration findings
-        for finding in nuclei_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "medium"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-
-        # Process enhanced scanner results (High Value Additions)
-        enhanced_security_results = (
+        # Dict-shaped scanner outputs (already vuln-like).
+        aggregator.add_bandit(bandit_results)
+        aggregator.add_trufflehog(trufflehog_results)
+        aggregator.add_grype(grype_results)
+        aggregator.add_eslint(eslint_results)
+        aggregator.add_quality(
+            pylint_results + flake8_results + radon_results + shellcheck_results +
+            hadolint_results + sqlfluff_results + pydeps_results
+        )
+        aggregator.add_nuclei(nuclei_results)
+        aggregator.add_enhanced_security(
             snyk_results + gosec_results + cargo_audit_results +
             spotbugs_results + pyre_results + zap_results + api_fuzzer_results + horusec_results
         )
-        for finding in enhanced_security_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "medium"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        aggregator.add_dep_audit(pip_audit_results + npm_audit_results)
+        aggregator.add_compliance(syft_results)
 
-        # Process compliance scanner results (pip-audit, npm-audit are security vulns)
-        for finding in pip_audit_results + npm_audit_results:
-            vuln_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc)
-            }
-            vulnerabilities.append(vuln_dict)
-            severity = normalize_severity(finding.get("severity", "medium"))
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        # AI-typed scanners (objects, not dicts).
+        aggregator.add_zero_day(zero_day_results)
+        aggregator.add_business_logic(business_logic_results)
+        aggregator.add_llm_security(llm_security_results)
+        aggregator.add_auth_scanner(auth_scanner_results)
 
-        # Process Syft license compliance results
-        for finding in syft_results:
-            compliance_dict = {
-                **finding,
-                "repo_id": repo_id,
-                "scan_id": scan_id,
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc),
-                "issue_type": "compliance"
-            }
-            compliance_issues.append(compliance_dict)
-
-        # ===== PROCESS AI-POWERED SCANNER RESULTS =====
-
-        # Process Zero-Day Detector results (ML Anomaly Detection)
-        for anomaly in zero_day_results:
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=anomaly.file_path,
-                line_start=anomaly.line_number,
-                line_end=anomaly.line_number,
-                severity=anomaly.severity,
-                category=f"zero-day-{anomaly.type}",
-                owasp_category=map_to_owasp(anomaly.type, anomaly.description, ""),
-                title=anomaly.title,
-                description=f"{anomaly.description}\n\nAnomaly Score: {anomaly.anomaly_score:.2f}\nConfidence: {anomaly.confidence:.2f}",
-                code_snippet=anomaly.code_snippet,
-                detected_by="Zero-Day Detector (AI)"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[anomaly.severity] = severity_counts.get(anomaly.severity, 0) + 1
-
-        # Process Business Logic Scanner results
-        for violation in business_logic_results:
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=violation.file_path,
-                line_start=violation.line_number,
-                line_end=violation.line_number,
-                severity=violation.severity,
-                category=f"business-logic-{violation.type}",
-                owasp_category=map_to_owasp(violation.type, violation.description, ""),
-                title=violation.title,
-                description=f"{violation.description}\n\n**Attack Scenario:**\n{violation.attack_scenario}\n\n**Recommendation:**\n{violation.recommendation}",
-                code_snippet=violation.proof_of_concept or f"Endpoint: {violation.endpoint}",
-                detected_by="Business Logic Scanner (AI)"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[violation.severity] = severity_counts.get(violation.severity, 0) + 1
-
-        # Process LLM Security Scanner results
-        for llm_vuln in llm_security_results:
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=llm_vuln.endpoint_file,
-                line_start=llm_vuln.endpoint_line,
-                line_end=llm_vuln.endpoint_line,
-                severity=llm_vuln.severity,
-                category=f"llm-security-{llm_vuln.vulnerability_type}",
-                owasp_category="A03",  # LLM vulnerabilities often relate to injection
-                title=llm_vuln.title,
-                description=f"{llm_vuln.description}\n\n**Risk Assessment:**\n"
-                           f"- Jailbreak Risk: {llm_vuln.jailbreak_risk:.2%}\n"
-                           f"- Data Leak Probability: {llm_vuln.data_leak_probability:.2%}\n"
-                           f"- Permission Abuse Risk: {llm_vuln.permission_abuse_risk:.2%}\n\n"
-                           f"**Remediation:**\n{llm_vuln.remediation}",
-                code_snippet=f"Successful Payload:\n{llm_vuln.successful_payload[:200]}...",
-                detected_by="LLM Security Scanner (AI)"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[llm_vuln.severity] = severity_counts.get(llm_vuln.severity, 0) + 1
-
-        # Process Auth Scanner results
-        for auth_vuln in auth_scanner_results:
-            vuln = Vulnerability(
-                repo_id=repo_id,
-                scan_id=scan_id,
-                file_path=auth_vuln.file_path,
-                line_start=auth_vuln.line_number,
-                line_end=auth_vuln.line_number,
-                severity=auth_vuln.severity,
-                category=f"auth-{auth_vuln.type}",
-                owasp_category="A07",  # Auth vulnerabilities are A07: Identification and Authentication Failures
-                title=auth_vuln.title,
-                description=f"{auth_vuln.description}\n\n**Attack Scenario:**\n{auth_vuln.attack_scenario}\n\n**Remediation:**\n{auth_vuln.remediation}\n\n**Confidence:** {auth_vuln.confidence:.0%}",
-                code_snippet=auth_vuln.code_snippet or "",
-                detected_by="Auth Scanner (AI)"
-            )
-            vulnerabilities.append(vuln.model_dump())
-            severity_counts[auth_vuln.severity] = severity_counts.get(auth_vuln.severity, 0) + 1
+        # Hand off to local names so the rest of process_scan_results
+        # (false-positive filter, context analyzer, score calc, Mongo
+        # writes) keeps working without changes.
+        vulnerabilities = aggregator.vulnerabilities
+        quality_issues = aggregator.quality_issues
+        compliance_issues = aggregator.compliance_issues
+        severity_counts = aggregator.severity_counts
 
         # Apply false positive filtering
         original_vuln_count = len(vulnerabilities)
@@ -1531,26 +1116,12 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
                 )
                 # Continue with original vulnerabilities
 
-        # Recalculate severity counts (works for both enriched and original vulns)
-        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-        for vuln in vulnerabilities:
-            # Ensure every vulnerability has a severity
-            severity_value = vuln.get("severity", "medium")
-            # Handle case where severity might be a list
-            if isinstance(severity_value, list):
-                severity = severity_value[0].lower() if severity_value else "medium"
-            elif isinstance(severity_value, str):
-                severity = severity_value.lower()
-            else:
-                severity = "medium"
-
-            # Normalize and validate severity
-            if severity not in severity_counts:
-                severity = "medium"  # Default to medium if invalid
-
-            # Ensure the vulnerability has a valid severity string
-            vuln["severity"] = severity
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        # The false-positive filter and context-analyzer enrichment can
+        # reshape the vulnerabilities list. Push it back into the
+        # aggregator and let it re-derive severity_counts in one place.
+        aggregator.vulnerabilities = vulnerabilities
+        aggregator.recompute_severity_counts()
+        severity_counts = aggregator.severity_counts
 
         # Generate priority report only if context analysis succeeded
         if context_analysis_succeeded and enriched_vulns:
@@ -1699,7 +1270,7 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             shutil.rmtree(repo_path)
 
     except Exception as e:
-        logger.error(f"Error processing scan: {str(e)}")
+        logger.exception(f"Error processing scan: {str(e)}")
         await db.scans.update_one(
             {"id": scan_id},
             {"$set": {
@@ -1717,116 +1288,15 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         if os.path.exists(repo_path):
             shutil.rmtree(repo_path)
 
-# API Routes
-@api_router.get("/")
-async def root():
-    return {"message": "Security Intelligence Platform API", "version": "1.0.0"}
+# Health and root routes now live in api.routes.health (Phase 1.5).
+from api.routes import health as _health_routes
+api_router.include_router(_health_routes.router)
 
-
-@api_router.get("/health")
-async def health_check():
-    """Health check endpoint with database and scanner status"""
-    health = {
-        "status": "healthy",
-        "database": "unknown",
-        "scanners": None
-    }
-
-    # Check database connection
-    try:
-        await client.admin.command('ping')
-        health["database"] = "connected"
-    except Exception as e:
-        health["status"] = "unhealthy"
-        health["database"] = f"disconnected: {str(e)}"
-
-    # Include scanner health if available
-    if _scanner_health_report:
-        health["scanners"] = {
-            "total": _scanner_health_report.total_scanners,
-            "available": _scanner_health_report.available_count,
-            "unavailable": _scanner_health_report.unavailable_count,
-            "is_healthy": _scanner_health_report.is_healthy()
-        }
-        if not _scanner_health_report.is_healthy():
-            health["status"] = "degraded"
-
-    return health
-
-
-@api_router.get("/scanners/health")
-async def get_scanner_health():
-    """Get detailed scanner health status"""
-    if _scanner_health_report:
-        return _scanner_health_report.to_dict()
-
-    # Run fresh health check if not available
-    try:
-        scanner_settings = await settings_manager.get_scanner_settings()
-        report = await check_all_scanners(scanner_settings)
-        return report.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to check scanner health: {str(e)}")
-
-
-# NOTE: Old create_repository endpoint removed - use the Git Integration endpoint below
-
-@api_router.get("/repositories", response_model=List[Repository])
-async def get_repositories():
-    """Get all repositories with their latest security scores"""
-    repos = await db.repositories.find({}, {"_id": 0}).to_list(1000)
-    for repo in repos:
-        if isinstance(repo.get('created_at'), str):
-            repo['created_at'] = datetime.fromisoformat(repo['created_at'])
-
-        # Get latest scan's security score for this repository
-        latest_scan = await db.scans.find_one(
-            {"repo_id": repo['id'], "status": "completed"},
-            {"_id": 0, "security_score": 1, "vulnerabilities_count": 1, "critical_count": 1, "high_count": 1}
-        )
-        if latest_scan:
-            repo['security_score'] = latest_scan.get('security_score', 0)
-            repo['vulnerabilities_count'] = latest_scan.get('vulnerabilities_count', 0)
-            repo['critical_count'] = latest_scan.get('critical_count', 0)
-            repo['high_count'] = latest_scan.get('high_count', 0)
-        else:
-            repo['security_score'] = None  # No scan yet
-            repo['vulnerabilities_count'] = 0
-            repo['critical_count'] = 0
-            repo['high_count'] = 0
-    return repos
-
-@api_router.get("/repositories/{repo_id}", response_model=Repository)
-async def get_repository(repo_id: str):
-    """Get repository by ID"""
-    repo = await db.repositories.find_one({"id": repo_id}, {"_id": 0})
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found")
-    if isinstance(repo.get('created_at'), str):
-        repo['created_at'] = datetime.fromisoformat(repo['created_at'])
-    return repo
-
-@api_router.delete("/repositories/{repo_id}")
-async def delete_repository(repo_id: str):
-    """Delete a repository and all associated data"""
-    result = await db.repositories.delete_one({"id": repo_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Repository not found")
-
-    # Get all scan IDs for this repository
-    scans = await db.scans.find({"repo_id": repo_id}, {"id": 1}).to_list(1000)
-    scan_ids = [scan["id"] for scan in scans]
-
-    # Delete all related data
-    if scan_ids:
-        await db.vulnerabilities.delete_many({"scan_id": {"$in": scan_ids}})
-        await db.quality_issues.delete_many({"scan_id": {"$in": scan_ids}})
-        await db.compliance_issues.delete_many({"scan_id": {"$in": scan_ids}})
-
-    await db.scans.delete_many({"repo_id": repo_id})
-
-    logger.info(f"Deleted repository {repo_id} and all associated data")
-    return {"message": "Repository deleted successfully"}
+# Repository read + delete routes now live in api.routes.repositories
+# (Phase 1.5). The previously duplicated DELETE handler at line ~2737
+# (`remove_repository`) is consolidated into the extracted version.
+from api.routes import repositories as _repository_routes
+api_router.include_router(_repository_routes.router)
 
 @api_router.post("/scans/{repo_id}")
 async def start_scan(repo_id: str, background_tasks: BackgroundTasks):
@@ -1869,188 +1339,15 @@ async def start_scan(repo_id: str, background_tasks: BackgroundTasks):
         logger.error(f"Error starting scan: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/scans/{repo_id}", response_model=List[Scan])
-async def get_scans(repo_id: str):
-    """Get all scans for a repository"""
-    scans = await db.scans.find({"repo_id": repo_id}, {"_id": 0}).sort("started_at", -1).to_list(1000)
-    for scan in scans:
-        if isinstance(scan.get('started_at'), str):
-            scan['started_at'] = datetime.fromisoformat(scan['started_at'])
-        if scan.get('completed_at') and isinstance(scan['completed_at'], str):
-            scan['completed_at'] = datetime.fromisoformat(scan['completed_at'])
-    return scans
+# Scan read/delete routes moved to api.routes.scans (Phase 1.5).
+# POST /scans/{repo_id} (start_scan) above keeps living here until the
+# scan orchestrator service is extracted in Phase 1.6.
+from api.routes import scans as _scan_routes
+api_router.include_router(_scan_routes.router)
 
-@api_router.get("/scans/detail/{scan_id}", response_model=Scan)
-async def get_scan(scan_id: str):
-    """Get scan by ID"""
-    scan = await db.scans.find_one({"id": scan_id}, {"_id": 0})
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    if isinstance(scan.get('started_at'), str):
-        scan['started_at'] = datetime.fromisoformat(scan['started_at'])
-    if scan.get('completed_at') and isinstance(scan['completed_at'], str):
-        scan['completed_at'] = datetime.fromisoformat(scan['completed_at'])
-    return scan
-
-@api_router.delete("/scans/{scan_id}")
-async def delete_scan(scan_id: str):
-    """Delete a scan and its associated vulnerabilities"""
-    result = await db.scans.delete_one({"id": scan_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    # Also delete associated vulnerabilities
-    await db.vulnerabilities.delete_many({"scan_id": scan_id})
-    return {"message": "Scan deleted successfully"}
-
-@api_router.get("/vulnerabilities/{scan_id}", response_model=List[Vulnerability])
-async def get_vulnerabilities(scan_id: str):
-    """Get all vulnerabilities for a scan"""
-    vulns = await db.vulnerabilities.find({"scan_id": scan_id}, {"_id": 0}).to_list(10000)
-    for vuln in vulns:
-        if isinstance(vuln.get('created_at'), str):
-            vuln['created_at'] = datetime.fromisoformat(vuln['created_at'])
-    return vulns
-
-@api_router.get("/vulnerabilities/repo/{repo_id}", response_model=List[Vulnerability])
-async def get_vulnerabilities_by_repo(repo_id: str):
-    """Get all vulnerabilities for a repository"""
-    vulns = await db.vulnerabilities.find({"repo_id": repo_id}, {"_id": 0}).to_list(10000)
-    for vuln in vulns:
-        if isinstance(vuln.get('created_at'), str):
-            vuln['created_at'] = datetime.fromisoformat(vuln['created_at'])
-    return vulns
-
-# Quality Issues Endpoints
-@api_router.get("/quality/{scan_id}")
-async def get_quality_issues(scan_id: str):
-    """Get all quality issues for a scan"""
-    issues = await db.quality_issues.find({"scan_id": scan_id}, {"_id": 0}).to_list(10000)
-    for issue in issues:
-        if isinstance(issue.get('created_at'), str):
-            issue['created_at'] = datetime.fromisoformat(issue['created_at'])
-    return issues
-
-@api_router.get("/quality/repo/{repo_id}")
-async def get_quality_issues_by_repo(repo_id: str):
-    """Get all quality issues for a repository"""
-    issues = await db.quality_issues.find({"repo_id": repo_id}, {"_id": 0}).to_list(10000)
-    for issue in issues:
-        if isinstance(issue.get('created_at'), str):
-            issue['created_at'] = datetime.fromisoformat(issue['created_at'])
-    return issues
-
-@api_router.get("/quality/summary/{scan_id}")
-async def get_quality_summary(scan_id: str):
-    """Get quality metrics summary for a scan"""
-    issues = await db.quality_issues.find({"scan_id": scan_id}, {"_id": 0}).to_list(10000)
-
-    summary = {
-        "total_issues": len(issues),
-        "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
-        "by_category": {},
-        "by_scanner": {},
-        "quality_score": 100
-    }
-
-    for issue in issues:
-        severity = issue.get("severity", "low").lower()
-        category = issue.get("category", "other")
-        scanner = issue.get("detected_by", "unknown")
-
-        if severity in summary["by_severity"]:
-            summary["by_severity"][severity] += 1
-        summary["by_category"][category] = summary["by_category"].get(category, 0) + 1
-        summary["by_scanner"][scanner] = summary["by_scanner"].get(scanner, 0) + 1
-
-    # Calculate quality score
-    summary["quality_score"] = calculate_quality_score(issues)
-
-    return summary
-
-# Compliance Issues Endpoints
-@api_router.get("/compliance/{scan_id}")
-async def get_compliance_issues(scan_id: str):
-    """Get all compliance issues for a scan"""
-    issues = await db.compliance_issues.find({"scan_id": scan_id}, {"_id": 0}).to_list(10000)
-    for issue in issues:
-        if isinstance(issue.get('created_at'), str):
-            issue['created_at'] = datetime.fromisoformat(issue['created_at'])
-    return issues
-
-@api_router.get("/compliance/repo/{repo_id}")
-async def get_compliance_issues_by_repo(repo_id: str):
-    """Get all compliance issues for a repository"""
-    issues = await db.compliance_issues.find({"repo_id": repo_id}, {"_id": 0}).to_list(10000)
-    for issue in issues:
-        if isinstance(issue.get('created_at'), str):
-            issue['created_at'] = datetime.fromisoformat(issue['created_at'])
-    return issues
-
-@api_router.get("/compliance/summary/{scan_id}")
-async def get_compliance_summary(scan_id: str):
-    """Get compliance metrics summary for a scan"""
-    issues = await db.compliance_issues.find({"scan_id": scan_id}, {"_id": 0}).to_list(10000)
-
-    summary = {
-        "total_issues": len(issues),
-        "by_risk_level": {"high": 0, "medium": 0, "low": 0, "unknown": 0},
-        "by_license": {},
-        "compliance_score": 100
-    }
-
-    for issue in issues:
-        risk = issue.get("license_risk", "unknown").lower()
-        license_name = issue.get("license", "unknown")
-
-        if risk in summary["by_risk_level"]:
-            summary["by_risk_level"][risk] += 1
-        else:
-            summary["by_risk_level"]["unknown"] += 1
-
-        summary["by_license"][license_name] = summary["by_license"].get(license_name, 0) + 1
-
-    # Calculate compliance score
-    summary["compliance_score"] = calculate_compliance_score(issues)
-
-    return summary
-
-@api_router.get("/sbom/{repo_id}")
-async def get_sbom(repo_id: str):
-    """Get Software Bill of Materials for a repository"""
-    # Get latest scan
-    latest_scan = await db.scans.find_one(
-        {"repo_id": repo_id, "status": "completed"},
-        {"_id": 0},
-        sort=[("started_at", -1)]
-    )
-
-    if not latest_scan:
-        raise HTTPException(status_code=404, detail="No completed scans found")
-
-    # Get compliance issues which contain package info
-    issues = await db.compliance_issues.find(
-        {"scan_id": latest_scan["id"]},
-        {"_id": 0}
-    ).to_list(10000)
-
-    # Build SBOM structure
-    packages = []
-    for issue in issues:
-        packages.append({
-            "name": issue.get("package_name", "unknown"),
-            "version": issue.get("package_version", ""),
-            "type": issue.get("package_type", "unknown"),
-            "license": issue.get("license", "unknown"),
-            "license_risk": issue.get("license_risk", "unknown")
-        })
-
-    return {
-        "repo_id": repo_id,
-        "scan_id": latest_scan["id"],
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "total_packages": len(packages),
-        "packages": packages
-    }
+# Findings list/summary/sbom routes moved to api.routes.findings (Phase 1.5).
+from api.routes import findings as _findings_routes
+api_router.include_router(_findings_routes.router)
 
 @api_router.post("/ai/fix-recommendation")
 async def get_ai_fix_recommendation(request: AIFixRequest):
@@ -2082,16 +1379,11 @@ Provide:
 
 Format your response in markdown."""
 
-        # Initialize LLM orchestrator with database connection and settings manager
         orchestrator = LLMOrchestrator(db=db, settings_manager=settings_manager)
-
-        # Determine model
-        default_models = {
-            "openai": "gpt-4o-mini",
-            "anthropic": "claude-3-7-sonnet-20250219",
-            "gemini": "gemini-2.0-flash"
-        }
-        model = request.model or default_models.get(request.provider, "claude-3-7-sonnet-20250219")
+        # The orchestrator resolves model IDs against llm.model_registry —
+        # a None / unknown / legacy value is auto-migrated to the current
+        # default for the requested provider.
+        model = request.model or orchestrator.get_default_model(request.provider)
 
         # Get AI response using vulnerability-specific method
         response = await orchestrator.generate_vulnerability_fix(
@@ -2122,162 +1414,22 @@ async def get_owasp_categories():
     """Get OWASP Top 10 categories"""
     return OWASP_CATEGORIES
 
-@api_router.get("/stats/{repo_id}")
-async def get_repository_stats(repo_id: str):
-    """Get repository statistics and trends"""
-    try:
-        # Get latest scan
-        latest_scan = await db.scans.find_one(
-            {"repo_id": repo_id, "status": "completed"},
-            {"_id": 0},
-            sort=[("started_at", -1)]
-        )
-        
-        if not latest_scan:
-            return {"message": "No completed scans found"}
-        
-        # Get vulnerability distribution by OWASP
-        owasp_distribution = {}
-        vulns = await db.vulnerabilities.find({"scan_id": latest_scan['id']}, {"_id": 0}).to_list(10000)
-        
-        for vuln in vulns:
-            category = vuln['owasp_category']
-            owasp_distribution[category] = owasp_distribution.get(category, 0) + 1
-        
-        # Get severity distribution
-        severity_dist = {
-            "critical": latest_scan.get('critical_count', 0),
-            "high": latest_scan.get('high_count', 0),
-            "medium": latest_scan.get('medium_count', 0),
-            "low": latest_scan.get('low_count', 0)
-        }
-        
-        # Get scan history
-        scan_history = await db.scans.find(
-            {"repo_id": repo_id, "status": "completed"},
-            {"_id": 0, "id": 1, "started_at": 1, "security_score": 1, "vulnerabilities_count": 1}
-        ).sort("started_at", -1).limit(10).to_list(10)
-        
-        return {
-            "security_score": latest_scan.get('security_score', 0),
-            "total_vulnerabilities": latest_scan.get('vulnerabilities_count', 0),
-            "severity_distribution": severity_dist,
-            "owasp_distribution": owasp_distribution,
-            "scan_history": scan_history,
-            "total_files_scanned": latest_scan.get('total_files', 0),
-            "tools_used": latest_scan.get('scan_results', {})
-        }
-    
-    except Exception as e:
-        logger.error(f"Error getting stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Stats route now lives in api.routes.stats (Phase 1.5).
+from api.routes import stats as _stats_routes
+api_router.include_router(_stats_routes.router)
 
-# NOTE: Old duplicate api-keys endpoints removed - use /settings and /settings/api-keys below
+# Settings routes moved to api.routes.settings (Phase 1.5).
+# Includes: /settings, /settings/api-keys (POST + GET masked),
+# /settings/scanners (installed binaries) + /settings/scanners/config
+# (persisted state) + PUT, /settings/ai-scanners (GET + POST).
+# Duplicate GET /settings/scanners handler at line ~2064 of the
+# pre-refactor file was consolidated.
+from api.routes import settings as _settings_routes
+api_router.include_router(_settings_routes.router)
 
-@api_router.get("/settings/scanners")
-async def get_scanner_status():
-    """Get status of installed security scanners (26 total scanners)"""
-    scanners = {
-        # Security scanners (8)
-        "semgrep": {"name": "Semgrep (Enhanced)", "type": "SAST", "installed": bool(shutil.which("semgrep"))},
-        "gitleaks": {"name": "Gitleaks", "type": "Secrets", "installed": bool(shutil.which("gitleaks"))},
-        "trivy": {"name": "Trivy", "type": "Dependencies", "installed": bool(shutil.which("trivy"))},
-        "checkov": {"name": "Checkov", "type": "IaC", "installed": bool(shutil.which("checkov"))},
-        "bandit": {"name": "Bandit", "type": "Python Security", "installed": bool(shutil.which("bandit"))},
-        "trufflehog": {"name": "TruffleHog", "type": "Secrets", "installed": bool(shutil.which("trufflehog"))},
-        "grype": {"name": "Grype", "type": "Dependencies", "installed": bool(shutil.which("grype"))},
-        "eslint": {"name": "ESLint", "type": "JS/TS Security", "installed": bool(shutil.which("eslint"))},
-
-        # Quality scanners (7)
-        "pylint": {"name": "Pylint", "type": "Python Quality", "installed": bool(shutil.which("pylint"))},
-        "flake8": {"name": "Flake8", "type": "Python Style", "installed": bool(shutil.which("flake8"))},
-        "radon": {"name": "Radon", "type": "Complexity", "installed": bool(shutil.which("radon"))},
-        "shellcheck": {"name": "ShellCheck", "type": "Shell Scripts", "installed": bool(shutil.which("shellcheck"))},
-        "hadolint": {"name": "Hadolint", "type": "Docker", "installed": bool(shutil.which("hadolint"))},
-        "sqlfluff": {"name": "SQLFluff", "type": "SQL Security", "installed": bool(shutil.which("sqlfluff"))},
-        "pydeps": {"name": "pydeps", "type": "Architecture", "installed": bool(shutil.which("pydeps"))},
-
-        # Compliance scanners (3)
-        "pip_audit": {"name": "pip-audit", "type": "Python Deps", "installed": bool(shutil.which("pip-audit"))},
-        "npm_audit": {"name": "npm-audit", "type": "JS/TS Deps", "installed": bool(shutil.which("npm"))},
-        "syft": {"name": "Syft", "type": "SBOM/License", "installed": bool(shutil.which("syft"))},
-
-        # Advanced scanners (1)
-        "nuclei": {"name": "Nuclei", "type": "Template/CVE Scanner", "installed": bool(shutil.which("nuclei")) or os.path.exists("/usr/local/bin/nuclei") or os.path.exists("/opt/homebrew/bin/nuclei")},
-
-        # High Value Addition scanners (5 active, 2 disabled)
-        "snyk": {"name": "Snyk CLI", "type": "Modern Dependency Scanner", "installed": bool(shutil.which("snyk"))},
-        "gosec": {"name": "Gosec", "type": "Go Security", "installed": bool(shutil.which("gosec"))},
-        # "cargo_audit": {"name": "cargo-audit", "type": "Rust Security", "installed": False, "disabled": True},  # Rust-specific
-        "spotbugs": {"name": "SpotBugs", "type": "Java Bytecode Analysis", "installed": bool(shutil.which("spotbugs"))},
-        "pyre": {"name": "Pyre", "type": "Python Type Checker", "installed": bool(shutil.which("pyre"))},
-        "zap": {"name": "OWASP ZAP (Static)", "type": "Web Security Patterns", "installed": True},  # Static analysis
-        "api_fuzzer": {"name": "API Fuzzer", "type": "API Security Testing", "installed": True},  # Built-in
-        "zap_dast": {"name": "OWASP ZAP (DAST)", "type": "Dynamic Web Security", "installed": bool(shutil.which("docker"))},  # Docker-based
-        "horusec": {"name": "Horusec", "type": "Multi-Language SAST", "installed": bool(shutil.which("horusec"))},
-    }
-    return scanners
-
-@api_router.post("/reports/generate")
-async def generate_report(request: ReportRequest):
-    """Generate security report"""
-    try:
-        # Get scan and vulnerabilities
-        scan = await db.scans.find_one({"id": request.scan_id}, {"_id": 0})
-        if not scan:
-            raise HTTPException(status_code=404, detail="Scan not found")
-        
-        repo = await db.repositories.find_one({"id": request.repo_id}, {"_id": 0})
-        vulns = await db.vulnerabilities.find({"scan_id": request.scan_id}, {"_id": 0}).to_list(10000)
-        
-        if request.format == "json":
-            return {
-                "repository": repo,
-                "scan": scan,
-                "vulnerabilities": vulns,
-                "owasp_mapping": OWASP_CATEGORIES
-            }
-        elif request.format == "csv":
-            # Return CSV data structure
-            csv_data = []
-            for vuln in vulns:
-                csv_data.append({
-                    "file": vuln['file_path'],
-                    "line": f"{vuln['line_start']}-{vuln['line_end']}",
-                    "severity": vuln['severity'],
-                    "owasp": vuln['owasp_category'],
-                    "title": vuln['title'],
-                    "description": vuln['description'],
-                    "tool": vuln['detected_by']
-                })
-            return {"format": "csv", "data": csv_data}
-        elif request.format == "pdf":
-            # Generate PDF report
-            from reporting.pdf_report import PDFSecurityReport
-            from fastapi.responses import Response
-
-            pdf_generator = PDFSecurityReport()
-            pdf_bytes = pdf_generator.generate_report(
-                repo_data=repo,
-                scan_data=scan,
-                vulnerabilities=vulns
-            )
-
-            # Return PDF as downloadable file
-            filename = f"security_report_{request.repo_id}_{request.scan_id}.pdf"
-            return Response(
-                content=pdf_bytes,
-                media_type="application/pdf",
-                headers={
-                    "Content-Disposition": f"attachment; filename={filename}"
-                }
-            )
-        else:
-            return {"message": "Unsupported format. Use: json, csv, or pdf"}
-    
-    except Exception as e:
-        logger.error(f"Error generating report: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Report generation moved to api.routes.reports (Phase 1.5).
+from api.routes import reports as _report_routes
+api_router.include_router(_report_routes.router)
 
 
 # ============================================
@@ -2330,207 +1482,7 @@ async def get_current_scan_limits():
     }
 
 
-# ============================================
-# SETTINGS ENDPOINTS
-# ============================================
-
-@api_router.get("/settings", response_model=SettingsResponse)
-async def get_settings():
-    """
-    Get all settings status (shows which keys are set, not the actual values)
-    """
-    try:
-        return await settings_manager.get_all_settings()
-    except Exception as e:
-        logger.error(f"Error getting settings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.post("/settings/api-keys")
-async def update_api_keys(request: UpdateAPIKeysRequest):
-    """
-    Update API keys for LLM services and scanners
-
-    - **openai_api_key**: OpenAI API key for GPT models
-    - **anthropic_api_key**: Anthropic API key for Claude models
-    - **gemini_api_key**: Google Gemini API key
-    - **github_token**: GitHub token for better rate limits
-    - **snyk_token**: Snyk authentication token
-
-    Note: Keys are encrypted before storage. Pass empty string to delete a key.
-    """
-    try:
-        from settings.models import APIKeySetting
-
-        logger.info(f"Received API key update request: {request.model_dump()}")
-
-        api_keys = APIKeySetting(
-            openai_api_key=request.openai_api_key,
-            anthropic_api_key=request.anthropic_api_key,
-            gemini_api_key=request.gemini_api_key,
-            github_token=request.github_token,
-            snyk_token=request.snyk_token
-        )
-
-        logger.info("Calling settings_manager.update_api_keys...")
-        await settings_manager.update_api_keys(api_keys)
-        logger.info("API keys updated")
-
-        settings_response = await settings_manager.get_all_settings()
-        logger.info(f"Settings response: {settings_response.model_dump()}")
-
-        return {
-            "message": "API keys updated successfully",
-            "updated": settings_response.model_dump()
-        }
-
-    except Exception as e:
-        logger.error(f"Error updating API keys: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.get("/settings/api-keys")
-async def get_api_keys_values():
-    """
-    Get actual API key values (for administrative purposes)
-    WARNING: This endpoint returns decrypted keys - use with caution
-    """
-    try:
-        keys = await settings_manager.get_api_keys()
-
-        # Mask keys for security (show first 8 chars only)
-        masked_keys = {}
-        for key, value in keys.items():
-            if value:
-                masked_keys[key] = value[:8] + "..." if len(value) > 8 else "***"
-            else:
-                masked_keys[key] = None
-
-        return masked_keys
-
-    except Exception as e:
-        logger.error(f"Error getting API keys: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.get("/settings/ai-scanners", response_model=AIScannerSettings)
-async def get_ai_scanner_settings():
-    """
-    Get AI scanner enable/disable settings
-
-    Returns the current state of all AI-powered security scanners:
-    - Zero-Day Detector (ML-based anomaly detection)
-    - Business Logic Scanner (logic flaw detection)
-    - LLM Security Scanner (prompt injection testing)
-    - Auth Scanner (authentication vulnerability detection)
-    """
-    try:
-        settings = await settings_manager.get_ai_scanner_settings()
-        return AIScannerSettings(**settings)
-    except Exception as e:
-        logger.error(f"Error getting AI scanner settings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.post("/settings/ai-scanners")
-async def update_ai_scanner_settings(request: UpdateAIScannerSettingsRequest):
-    """
-    Update AI scanner enable/disable settings
-
-    - **enable_zero_day_detector**: Enable/disable ML-based zero-day detection
-    - **enable_business_logic_scanner**: Enable/disable business logic flaw detection
-    - **enable_llm_security_scanner**: Enable/disable LLM prompt injection testing
-    - **enable_auth_scanner**: Enable/disable authentication vulnerability scanner
-
-    Note: Only scanners with LLM API keys configured will run when enabled.
-    """
-    try:
-        # Get current settings
-        current_settings = await settings_manager.get_ai_scanner_settings()
-
-        # Update only provided values
-        update_dict = request.model_dump(exclude_unset=True)
-        current_settings.update(update_dict)
-
-        # Save updated settings
-        success = await settings_manager.update_ai_scanner_settings(current_settings)
-
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update AI scanner settings")
-
-        # Clear cache to ensure fresh settings on next scan
-        settings_manager.clear_cache()
-
-        return {
-            "message": "AI scanner settings updated successfully",
-            "updated": current_settings
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating AI scanner settings: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.get("/settings/scanners", response_model=ScannerSettings)
-async def get_scanner_settings_api():
-    """
-    Get all scanner enable/disable settings
-
-    Returns the current state of all 32 security scanners including:
-    - Core Security Scanners (SAST): Semgrep, Bandit, Gitleaks, etc.
-    - Quality Scanners: Pylint, Flake8, Radon, etc.
-    - Compliance Scanners: pip-audit, npm-audit, Syft
-    - Advanced Scanners: Nuclei, CodeQL
-    - High-Value Scanners: Snyk, Gosec, SpotBugs, Pyre, Horusec
-    - Web & API Security: OWASP ZAP (static & DAST), API Fuzzer
-    - AI-Powered Scanners: Zero-Day Detector, Business Logic, LLM Security, Auth Scanner
-    """
-    try:
-        settings = await settings_manager.get_scanner_settings()
-        return settings
-    except Exception as e:
-        logger.error(f"Error getting scanner settings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.put("/settings/scanners")
-async def update_scanner_settings_api(request: UpdateScannerSettingsRequest):
-    """
-    Update scanner enable/disable settings
-
-    Allows enabling or disabling any of the 32 security scanners.
-    Only provide the fields you want to update - all fields are optional.
-
-    Example:
-    ```json
-    {
-        "enable_semgrep": true,
-        "enable_zap_dast": false,
-        "enable_api_fuzzer": true
-    }
-    ```
-
-    Note:
-    - Only enabled scanners will run during security scans
-    - Some scanners require additional setup (e.g., ZAP DAST requires Docker)
-    - Changes take effect immediately on next scan
-    """
-    try:
-        updated_settings = await settings_manager.update_scanner_settings(request)
-
-        # Clear cache to ensure fresh settings on next scan
-        settings_manager.clear_cache()
-
-        return {
-            "message": "Scanner settings updated successfully",
-            "updated": updated_settings.model_dump()
-        }
-
-    except Exception as e:
-        logger.error(f"Error updating scanner settings: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+# Settings endpoints fully extracted to api.routes.settings (Phase 1.5).
 
 
 # ============================================
@@ -2644,82 +1596,13 @@ async def submit_model_feedback(
 # Git Integration Endpoints
 # ============================================
 
-@api_router.get("/integrations/git")
-async def get_git_integrations():
-    """Get all connected Git integrations"""
-    try:
-        integrations = await git_integration_service.get_integrations()
-        return {"integrations": [i.model_dump() for i in integrations]}
-    except Exception as e:
-        logger.error(f"Error getting git integrations: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Git integration list/connect/disconnect routes moved to
+# api.routes.integrations (Phase 1.5). The `POST /repositories`
+# handler that cross-writes to the main repositories collection stays
+# below until the repository service is extracted.
+from api.routes import integrations as _integration_routes
+api_router.include_router(_integration_routes.router)
 
-
-@api_router.post("/integrations/git/connect")
-async def connect_git_integration(request: ConnectGitIntegrationRequest):
-    """Connect a Git provider (GitHub/GitLab)"""
-    try:
-        result = await git_integration_service.connect_integration(
-            provider=request.provider,
-            name=request.name,
-            access_token=request.access_token,
-            base_url=request.base_url
-        )
-
-        if not result["success"]:
-            raise HTTPException(status_code=400, detail=result.get("error", "Connection failed"))
-
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error connecting git integration: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.delete("/integrations/git/{provider}")
-async def disconnect_git_integration(provider: str, name: str = None):
-    """Disconnect a Git provider"""
-    try:
-        git_provider = GitProvider(provider)
-        result = await git_integration_service.disconnect_integration(git_provider, name or provider)
-
-        if not result["success"]:
-            raise HTTPException(status_code=400, detail=result.get("error", "Disconnection failed"))
-
-        return result
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error disconnecting git integration: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.get("/integrations/git/{provider}/repositories")
-async def list_remote_repositories(provider: str, page: int = 1, per_page: int = 30):
-    """List repositories from the connected Git provider"""
-    try:
-        git_provider = GitProvider(provider)
-        result = await git_integration_service.list_remote_repositories(
-            git_provider, page=page, per_page=per_page
-        )
-
-        if not result["success"]:
-            raise HTTPException(status_code=400, detail=result.get("error"))
-
-        return result
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing repositories: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# NOTE: Duplicate GET /repositories removed - using the main endpoint above that queries db.repositories
 
 @api_router.post("/repositories")
 async def add_repository(request: AddRepositoryRequest):
@@ -2786,31 +1669,8 @@ async def add_repository(request: AddRepositoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@api_router.delete("/repositories/{repo_id}")
-async def remove_repository(repo_id: str):
-    """Remove a repository"""
-    try:
-        # Remove from git_repositories collection
-        result = await git_integration_service.remove_repository(repo_id)
-
-        # Also remove from main repositories collection
-        await db.repositories.delete_one({"id": repo_id})
-
-        # Also delete associated scans and vulnerabilities
-        await db.scans.delete_many({"repo_id": repo_id})
-        await db.vulnerabilities.delete_many({"repo_id": repo_id})
-
-        if not result["success"]:
-            # Even if git integration repo wasn't found, we may have removed from main collection
-            return {"success": True, "message": "Repository removed"}
-
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error removing repository: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+# NOTE: Duplicate `remove_repository` handler removed — consolidated
+# into api.routes.repositories.delete_repository.
 
 class UnifiedScanRequest(BaseModel):
     """Request model for unified comprehensive scan"""

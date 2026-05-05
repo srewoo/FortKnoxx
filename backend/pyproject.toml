@@ -1,0 +1,81 @@
+# Tooling config for the FortKnoxx backend.
+#
+# WHY: Centralize ruff/mypy/pytest config so pre-commit and CI agree.
+# Lives in backend/ so existing tooling (uvicorn, pip) is unaffected.
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["."]
+extend-exclude = [
+    "venv",
+    ".venv",
+    "engines/zero_day/training",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # warnings
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "S",   # bandit (security)
+    "C4",  # comprehensions
+    "SIM", # simplify
+]
+ignore = [
+    "E501",  # line length handled by formatter
+    "B008",  # FastAPI `Depends()` in defaults is idiomatic
+    "S101",  # assert in tests is fine
+    "S603",  # subprocess: full audit comes in Phase 4 (containerized scanners)
+    "S607",  # subprocess partial path: same as above
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"tests/benchmarks.py" = ["F841"]                     # legacy: unused locals are part of the benchmark setup
+"tests/test_unified_scanner.py" = ["E712", "C401"]   # legacy: rewriting belongs to Phase 9
+"tests/test_schemas.py" = ["C408"]                   # `dict(**kwargs)` is the readable form for the test factory
+"server.py" = ["B904"]  # to be fixed during Phase 1 decomposition
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+no_strict_optional = true
+explicit_package_bases = true
+exclude = [
+    "venv",
+    "engines/zero_day/training",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `asyncio_mode = "auto"` requires pytest-asyncio; once it's pinned in
+# requirements-base.txt and the suite has integration tests that need
+# event-loop fixtures, re-enable this. For now keep config sync-only.
+addopts = [
+    "--strict-markers",
+    "-ra",
+]
+markers = [
+    "integration: tests that touch real DB/Kafka/Redis (use testcontainers)",
+    "slow: tests >5s",
+    "asyncio: legacy marker on tests/test_unified_scanner.py — Phase 9 will rewrite under pytest-asyncio",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "venv/*",
+    "tests/*",
+    "engines/zero_day/training/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

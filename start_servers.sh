@@ -41,10 +41,31 @@ echo ""
 
 MISSING_DEPS=0
 
-# Check Python
-if command_exists python3; then
+# Check Python — require 3.10+ (3.9 is EOL and breaks scipy/sklearn/numpy)
+PYTHON_BIN=""
+for candidate in python3.12 python3.11 python3.10; do
+    if command_exists "$candidate"; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -n "$PYTHON_BIN" ]; then
+    PYTHON_VERSION=$($PYTHON_BIN --version 2>&1 | awk '{print $2}')
+    echo "  ✓ Python $PYTHON_VERSION found ($PYTHON_BIN)"
+elif command_exists python3; then
     PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
-    echo "  ✓ Python $PYTHON_VERSION found"
+    PY_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
+    PY_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
+    if [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -ge 10 ]; then
+        PYTHON_BIN="python3"
+        echo "  ✓ Python $PYTHON_VERSION found"
+    else
+        echo "  ❌ Python $PYTHON_VERSION is too old. Python 3.10+ required."
+        echo "     macOS: brew install python@3.11"
+        echo "     Linux: use deadsnakes PPA or pyenv"
+        MISSING_DEPS=1
+    fi
 else
     echo "  ❌ Python 3 not found. Please install Python 3.10+"
     MISSING_DEPS=1
@@ -173,22 +194,36 @@ if port_in_use 8000; then
     sleep 1
 fi
 
-# Setup virtual environment
-if [ ! -d "backend/venv" ]; then
-    echo "  Creating Python virtual environment..."
-    cd backend
-
-    # Try to use Python 3.12 first (best compatibility with numpy/torch)
-    if command_exists python3.12; then
-        python3.12 -m venv venv
-    elif command_exists python3.11; then
-        python3.11 -m venv venv
-    elif command_exists python3.10; then
-        python3.10 -m venv venv
-    else
-        python3 -m venv venv
+# Validate existing venv was built with Python 3.10+ — recreate if not
+if [ -d "backend/venv" ]; then
+    VENV_PY_VER=""
+    if [ -x "backend/venv/bin/python" ]; then
+        VENV_PY_VER=$(backend/venv/bin/python -c 'import sys; print("{}.{}".format(sys.version_info[0], sys.version_info[1]))' 2>/dev/null || echo "")
     fi
 
+    NEEDS_RECREATE=0
+    if [ -z "$VENV_PY_VER" ]; then
+        echo "  ⚠  Existing venv interpreter is broken or missing. Recreating..."
+        NEEDS_RECREATE=1
+    else
+        VENV_MAJOR=$(echo "$VENV_PY_VER" | cut -d. -f1)
+        VENV_MINOR=$(echo "$VENV_PY_VER" | cut -d. -f2)
+        if [ "$VENV_MAJOR" != "3" ] || [ "$VENV_MINOR" -lt 10 ]; then
+            echo "  ⚠  Existing venv uses Python $VENV_PY_VER (need 3.10+). Recreating..."
+            NEEDS_RECREATE=1
+        fi
+    fi
+
+    if [ "$NEEDS_RECREATE" = "1" ]; then
+        rm -rf backend/venv
+    fi
+fi
+
+# Setup virtual environment
+if [ ! -d "backend/venv" ]; then
+    echo "  Creating Python virtual environment with $PYTHON_BIN..."
+    cd backend
+    $PYTHON_BIN -m venv venv
     cd ..
     echo "  ✓ Virtual environment created"
 fi
@@ -198,7 +233,23 @@ if [ ! -f "backend/venv/bin/uvicorn" ]; then
     echo "  Installing Python dependencies (this may take 2-3 minutes)..."
     cd backend
     source venv/bin/activate
-    pip install -q -r requirements.txt
+    pip install -q --upgrade pip wheel "setuptools<82"
+    # Pin numpy<2 first — scipy/sklearn wheels are built against NumPy 1.x and
+    # crash with "_ARRAY_API not found" on NumPy 2.x.
+    pip install -q "numpy<2"
+    # Use constraints.txt to resolve known conflicts between checkov, torch,
+    # transformers, safety, and huggingface deps. Falls back gracefully if
+    # the file is missing (e.g. fresh clone without constraints.txt).
+    if [ -f "constraints.txt" ]; then
+        CONSTRAINTS_FLAG="-c constraints.txt"
+    else
+        echo "  ⚠  constraints.txt not found — installing without version constraints"
+        CONSTRAINTS_FLAG=""
+    fi
+    if ! pip install -q -r requirements.txt $CONSTRAINTS_FLAG; then
+        echo "  ⚠  Strict resolver failed. Retrying with legacy resolver..."
+        pip install -r requirements.txt $CONSTRAINTS_FLAG --use-deprecated=legacy-resolver
+    fi
     cd ..
     echo "  ✓ Dependencies installed"
 fi

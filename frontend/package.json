@@ -60,7 +60,9 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "test": "craco test"
+    "test": "craco test",
+    "lint": "eslint 'src/**/*.{js,jsx}' --max-warnings=200",
+    "lint:fix": "eslint 'src/**/*.{js,jsx}' --fix"
   },
   "browserslist": {
     "production": [

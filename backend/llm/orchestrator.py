@@ -1,13 +1,25 @@
-"""
-Multi-LLM Orchestrator
-Direct integration with free LLM APIs: OpenAI, Anthropic, Google Gemini
-No third-party dependencies - uses official SDKs only
+"""Multi-LLM orchestrator (OpenAI / Anthropic / Gemini).
+
+WHY: a single entry point for the rest of the app to talk to any LLM
+provider, with model IDs and quirks centralised in `model_registry`.
+Reasoning ("thinking") models — GPT-5 series, some Gemini 3.1 variants
+— reject the `temperature` parameter and require provider-specific
+fields like `max_completion_tokens`. This module consults the registry
+and adapts the request shape so callers stay simple.
 """
 
+import asyncio
 import logging
 import os
-from typing import Optional, Dict, Any
-import asyncio
+from typing import Any, Dict, Optional
+
+from .model_registry import (
+    DEFAULT_MODEL_BY_PROVIDER,
+    list_models,
+    resolve_model_id,
+    supports_temperature,
+    uses_max_completion_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,43 +181,41 @@ class LLMOrchestrator:
         temperature: float = 0.7,
         max_tokens: int = 5000
     ) -> str:
-        """
-        Generate completion from specified LLM provider
+        """Generate a completion from the requested provider.
 
-        Args:
-            provider: "openai", "anthropic", or "gemini"
-            model: Model name (e.g., "gpt-4oo", "claude-4-sonnet-20250514", "gemini-2.0-flash-exp")
-            messages: List of message dicts with "role" and "content"
-            system_message: Optional system prompt
-            temperature: Sampling temperature (0.0-1.0)
-            max_tokens: Maximum tokens in response
-
-        Returns:
-            Generated text response
+        `model` may be a current ID, a legacy ID, or None — it is
+        normalised against the registry so an upgrade of the registry
+        automatically migrates callers that pass stale defaults.
         """
-        # Load API keys from settings manager, environment, or database
         await self._load_keys()
-
         provider = provider.lower()
+
+        resolved_model = resolve_model_id(model, provider)
+        if resolved_model != model:
+            logger.info(
+                "Migrated requested model '%s' → '%s' for provider '%s'",
+                model, resolved_model, provider,
+            )
 
         try:
             if provider == "openai":
                 return await self._openai_completion(
-                    model, messages, system_message, temperature, max_tokens
+                    resolved_model, messages, system_message, temperature, max_tokens
                 )
             elif provider == "anthropic":
                 return await self._anthropic_completion(
-                    model, messages, system_message, temperature, max_tokens
+                    resolved_model, messages, system_message, temperature, max_tokens
                 )
             elif provider == "gemini":
                 return await self._gemini_completion(
-                    model, messages, system_message, temperature, max_tokens
+                    resolved_model, messages, system_message, temperature, max_tokens
                 )
             else:
-                raise ValueError(f"Unknown provider: {provider}. Supported: openai, anthropic, gemini")
-
+                raise ValueError(
+                    f"Unknown provider: {provider}. Supported: openai, anthropic, gemini"
+                )
         except Exception as e:
-            logger.error(f"Error calling {provider} API: {str(e)}")
+            logger.error(f"Error calling {provider} API ({resolved_model}): {str(e)}")
             raise
 
     async def _openai_completion(
@@ -216,23 +226,25 @@ class LLMOrchestrator:
         temperature: float,
         max_tokens: int
     ) -> str:
-        """Generate completion using OpenAI API"""
         client = self._get_openai_client()
 
-        # Add system message if provided
         api_messages = []
         if system_message:
             api_messages.append({"role": "system", "content": system_message})
-
         api_messages.extend(messages)
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=api_messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        kwargs: Dict[str, Any] = {"model": model, "messages": api_messages}
 
+        # Reasoning models (GPT-5 series) reject `temperature` and use
+        # `max_completion_tokens` instead of `max_tokens`.
+        if supports_temperature(model):
+            kwargs["temperature"] = temperature
+        if uses_max_completion_tokens(model):
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+        response = await client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
 
     async def _anthropic_completion(
@@ -243,18 +255,21 @@ class LLMOrchestrator:
         temperature: float,
         max_tokens: int
     ) -> str:
-        """Generate completion using Anthropic Claude API"""
         client = self._get_anthropic_client()
 
-        # Anthropic API structure is slightly different
-        response = await client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_message or "",
-            messages=messages
-        )
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_message or "",
+            "messages": messages,
+        }
+        # Claude models all accept `temperature` today, but the registry
+        # is the single source of truth in case Anthropic ships a
+        # reasoning-only variant that rejects it.
+        if supports_temperature(model):
+            kwargs["temperature"] = temperature
 
+        response = await client.messages.create(**kwargs)
         return response.content[0].text
 
     async def _gemini_completion(
@@ -265,36 +280,30 @@ class LLMOrchestrator:
         temperature: float,
         max_tokens: int
     ) -> str:
-        """Generate completion using Google Gemini API"""
         genai = self._get_gemini_client()
 
-        # Create model instance
+        generation_config: Dict[str, Any] = {"max_output_tokens": max_tokens}
+        if supports_temperature(model):
+            generation_config["temperature"] = temperature
+
         model_instance = genai.GenerativeModel(
             model_name=model,
-            generation_config={
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            }
+            generation_config=generation_config,
         )
 
-        # Combine system message and user messages
         prompt_parts = []
         if system_message:
             prompt_parts.append(f"System: {system_message}\n\n")
-
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             prompt_parts.append(f"{role.capitalize()}: {content}\n\n")
-
         full_prompt = "".join(prompt_parts)
 
-        # Generate response
         response = await asyncio.to_thread(
             model_instance.generate_content,
             full_prompt
         )
-
         return response.text
 
     async def generate_vulnerability_fix(
@@ -364,21 +373,20 @@ Format your response in markdown."""
             max_tokens=10000
         )
 
-    def get_available_models(self, provider: str) -> Dict[str, list]:
-        """Get list of available models for a provider"""
-        models = {
-            "openai": [
-                {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "description": "Fast and affordable OpenAI model"}
-            ],
-            "anthropic": [
-                {"id": "claude-3-7-sonnet-20250219", "name": "Claude Sonnet 3.7", "description": "Latest Claude Sonnet model"}
-            ],
-            "gemini": [
-                {"id": "gemini-2.0-flash", "name": "Gemini 2.5 Flash", "description": "Fast Gemini model"}
-            ]
-        }
+    def get_available_models(self, provider: str) -> list:
+        """Frontend-facing list of supported models for a provider.
 
-        return models.get(provider.lower(), [])
+        Returns an empty list for unknown providers. Backed by
+        `model_registry` so the inventory stays in one place.
+        """
+        return list_models(provider)
+
+    def get_default_model(self, provider: str) -> str:
+        """Return the canonical default model id for a provider."""
+        return DEFAULT_MODEL_BY_PROVIDER.get(
+            provider.lower(),
+            DEFAULT_MODEL_BY_PROVIDER["anthropic"],
+        )
 
     def is_provider_available(self, provider: str) -> bool:
         """Check if API key is configured for a provider"""

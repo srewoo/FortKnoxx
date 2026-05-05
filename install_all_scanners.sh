@@ -85,7 +85,7 @@ case $INSTALL_MODE in
         echo "  - ShellCheck, Hadolint"
         ;;
     full)
-        echo "Installing FULL set (26 tools)"
+        echo "Installing FULL set (35 tools — includes extended coverage)"
         ;;
 esac
 echo ""
@@ -210,7 +210,7 @@ if [ -z "$VIRTUAL_ENV" ]; then
 
     # Upgrade pip, setuptools, and wheel in new venv
     echo "   Upgrading pip, setuptools, and wheel..."
-    pip install --quiet --upgrade pip setuptools wheel
+    pip install --quiet --upgrade pip wheel "setuptools<82"
 
     echo "   ✅ Virtual environment activated and configured"
     echo ""
@@ -287,16 +287,24 @@ wait_with_timeout() {
 PIP_REQ_PID=""
 if [ -n "$REQ_FILE" ]; then
     echo "Installing backend dependencies from $REQ_FILE..."
-    # Use pip's cache and parallel downloads
-    $PIP install --quiet -r "$REQ_FILE" --no-warn-script-location 2>/dev/null &
+    # Apply constraints file to resolve known checkov/torch/transformers conflicts.
+    CONSTRAINTS_REQ=""
+    if [ -f "backend/constraints.txt" ]; then
+        CONSTRAINTS_REQ="-c backend/constraints.txt"
+    elif [ -f "constraints.txt" ]; then
+        CONSTRAINTS_REQ="-c constraints.txt"
+    fi
+    $PIP install --quiet -r "$REQ_FILE" $CONSTRAINTS_REQ --no-warn-script-location 2>/dev/null &
     PIP_REQ_PID=$!
 fi
 
 # Define package groups based on install mode
 SECURITY_TOOLS="semgrep bandit checkov"
 QUALITY_TOOLS="pylint flake8 radon"
-COMPLIANCE_TOOLS="pip-audit sqlfluff pydeps"
+COMPLIANCE_TOOLS="pip-audit sqlfluff pydeps cyclonedx-bom pip-licenses"
 ADVANCED_TOOLS="pyre-check"
+# Extended Coverage (added 2026-05): SCA, API fuzz, LLM red-team, cloud, k8s
+EXTENDED_TOOLS="schemathesis garak prowler kube-hunter"
 
 # Install Python tools based on mode
 case $INSTALL_MODE in
@@ -307,7 +315,7 @@ case $INSTALL_MODE in
         PYTHON_PACKAGES="$SECURITY_TOOLS $QUALITY_TOOLS pip-audit"
         ;;
     full)
-        PYTHON_PACKAGES="$SECURITY_TOOLS $QUALITY_TOOLS $COMPLIANCE_TOOLS $ADVANCED_TOOLS"
+        PYTHON_PACKAGES="$SECURITY_TOOLS $QUALITY_TOOLS $COMPLIANCE_TOOLS $ADVANCED_TOOLS $EXTENDED_TOOLS"
         ;;
 esac
 
@@ -318,6 +326,9 @@ for pkg in $PYTHON_PACKAGES; do
     case $pkg in
         pyre-check) cmd="pyre" ;;
         pip-audit) cmd="pip-audit" ;;
+        cyclonedx-bom) cmd="cyclonedx-py" ;;
+        pip-licenses) cmd="pip-licenses" ;;
+        kube-hunter) cmd="kube-hunter" ;;
         *) cmd="$pkg" ;;
     esac
 
@@ -366,7 +377,7 @@ case $INSTALL_MODE in
         BREW_TOOLS="gitleaks trivy trufflehog grype shellcheck hadolint"
         ;;
     full)
-        BREW_TOOLS="gitleaks trivy trufflehog grype shellcheck hadolint syft nuclei gosec spotbugs"
+        BREW_TOOLS="gitleaks trivy trufflehog grype shellcheck hadolint syft nuclei gosec spotbugs osv-scanner kube-bench"
         ;;
 esac
 
@@ -451,6 +462,12 @@ elif [ "$OS" = "linux" ]; then
         (install_linux_binary "trufflehog" "curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sudo sh -s -- -b /usr/local/bin") &
     fi
 
+    # Extended coverage on Linux (full mode only)
+    if [ "$INSTALL_MODE" = "full" ]; then
+        (install_linux_binary "osv-scanner" "go install github.com/google/osv-scanner/cmd/osv-scanner@v1") &
+        (install_linux_binary "kube-bench" "curl -sSfL https://raw.githubusercontent.com/aquasecurity/kube-bench/main/hack/install.sh | sudo sh -s -- -b /usr/local/bin") &
+    fi
+
     # Wait for all background installations
     wait
     echo "  ✓ Linux tools installed"
@@ -482,6 +499,20 @@ if command_exists npm; then
             [ "$QUIET" = false ] && echo "  ✓ snyk already installed (skipped)"
         else
             NPM_PACKAGES="$NPM_PACKAGES snyk"
+        fi
+    fi
+
+    # Extended coverage: license-checker + promptfoo (full mode only)
+    if [ "$INSTALL_MODE" = "full" ]; then
+        if [ "$SKIP_INSTALLED" = true ] && command_exists license-checker; then
+            [ "$QUIET" = false ] && echo "  ✓ license-checker already installed (skipped)"
+        else
+            NPM_PACKAGES="$NPM_PACKAGES license-checker"
+        fi
+        if [ "$SKIP_INSTALLED" = true ] && command_exists promptfoo; then
+            [ "$QUIET" = false ] && echo "  ✓ promptfoo already installed (skipped)"
+        else
+            NPM_PACKAGES="$NPM_PACKAGES promptfoo"
         fi
     fi
 
@@ -667,7 +698,25 @@ case $INSTALL_MODE in
             echo "  ✗ zaproxy"
         fi
         print_status "horusec"
-        EXPECTED_COUNT=26
+
+        echo ""
+        echo "Extended Coverage (9):"
+        print_status "osv-scanner"
+        print_status "cyclonedx-py"
+        print_status "pip-licenses"
+        print_status "license-checker"
+        print_status "schemathesis"
+        print_status "garak"
+        print_status "promptfoo"
+        print_status "prowler"
+        print_status "kube-bench"
+        # kube-hunter is a Python script, may live in venv
+        if command_exists kube-hunter; then
+            echo "  ✓ kube-hunter"
+        else
+            echo "  ✗ kube-hunter"
+        fi
+        EXPECTED_COUNT=35
         ;;
 esac
 
@@ -689,7 +738,8 @@ case $INSTALL_MODE in
         SCANNERS=("semgrep" "bandit" "gitleaks" "trufflehog" "trivy" "grype" "checkov" "eslint" "pylint" "pip-audit" "shellcheck" "hadolint")
         ;;
     full)
-        SCANNERS=("semgrep" "bandit" "gitleaks" "trufflehog" "trivy" "grype" "checkov" "eslint" "pylint" "flake8" "radon" "shellcheck" "hadolint" "sqlfluff" "pydeps" "pip-audit" "npm" "syft" "nuclei" "snyk" "gosec" "spotbugs" "pyre" "horusec")
+        SCANNERS=("semgrep" "bandit" "gitleaks" "trufflehog" "trivy" "grype" "checkov" "eslint" "pylint" "flake8" "radon" "shellcheck" "hadolint" "sqlfluff" "pydeps" "pip-audit" "npm" "syft" "nuclei" "snyk" "gosec" "spotbugs" "pyre" "horusec" \
+            "osv-scanner" "cyclonedx-py" "pip-licenses" "license-checker" "schemathesis" "garak" "promptfoo" "prowler" "kube-bench" "kube-hunter")
         ;;
 esac
 
@@ -742,7 +792,7 @@ echo ""
 echo "Re-run Options:"
 echo "  ./install_all_scanners.sh --minimal   # 5 tools, ~1 min"
 echo "  ./install_all_scanners.sh --core      # 12 tools, ~2 min"
-echo "  ./install_all_scanners.sh             # 26 tools, ~5 min"
+echo "  ./install_all_scanners.sh             # 35 tools, ~6 min"
 echo ""
 echo "Happy scanning!"
 echo ""
@@ -782,7 +832,7 @@ echo "📦 Installing NetworkX (Graph Operations)..."
 pip install --quiet 'networkx>=3.0' 2>/dev/null
 
 echo "📦 Installing Transformers (CodeBERT)..."
-pip install --quiet 'transformers>=4.30.0' 2>/dev/null
+pip install --quiet 'transformers>=4.30.0,<5.0.0' 2>/dev/null
 
 echo "📦 Installing Scikit-learn (ML Utilities)..."
 pip install --quiet 'scikit-learn>=1.3.0' 2>/dev/null

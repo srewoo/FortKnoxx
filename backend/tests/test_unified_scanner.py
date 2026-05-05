@@ -4,21 +4,13 @@ Tests all scanner integrations and payload systems
 """
 
 import pytest
-import asyncio
-import tempfile
-import shutil
-from pathlib import Path
+
+from engines.payloads.payload_generator import PayloadCategory, PayloadGenerator
+from engines.payloads.strix_fuzzer import MutationStrategy, StrixFuzzer
+from engines.payloads.unified_payload_manager import UnifiedPayloadManager
 
 # Import scanner components
-from engines.unified_scanner import (
-    UnifiedSecurityScanner,
-    UnifiedScanConfig,
-    UnifiedScanResult,
-    ScannerType
-)
-from engines.payloads.payload_generator import PayloadGenerator, PayloadCategory
-from engines.payloads.strix_fuzzer import StrixFuzzer, FuzzTarget, MutationStrategy
-from engines.payloads.unified_payload_manager import UnifiedPayloadManager
+from engines.unified_scanner import ScannerType, UnifiedScanConfig, UnifiedScanResult, UnifiedSecurityScanner
 
 
 class TestPayloadGeneration:
@@ -112,11 +104,7 @@ class TestUnifiedPayloadManager:
         manager = UnifiedPayloadManager()
 
         # Python target
-        python_target = {
-            "language": "python",
-            "framework": "flask",
-            "features": ["database", "auth"]
-        }
+        python_target = {"language": "python", "framework": "flask", "features": ["database", "auth"]}
 
         selected = await manager.smart_payload_selection(python_target, max_payloads=20)
         assert len(selected) <= 20, "Should respect max_payloads limit"
@@ -189,7 +177,7 @@ class TestUnifiedScanner:
             enable_auth_scanner=True,
             enable_codeql=False,  # Disable CodeQL for faster tests
             enable_docker=False,
-            enable_iac=False
+            enable_iac=False,
         )
 
         scanner = UnifiedSecurityScanner(config)
@@ -241,7 +229,9 @@ class TestUnifiedScanner:
         recommendations = scanner._generate_recommendations()
 
         assert len(recommendations) > 0, "Should generate recommendations"
-        assert any("critical" in r.lower() for r in recommendations), "Should recommend addressing critical issues"
+        assert any(
+            "critical" in r.lower() for r in recommendations
+        ), "Should recommend addressing critical issues"
 
     def test_consolidated_report_structure(self):
         """Test consolidated report generation"""
@@ -287,9 +277,9 @@ class TestIntegration:
 
         # Verify payloads can be used for testing
         for payload in llm_payloads[:5]:  # Test first 5
-            assert hasattr(payload, 'payload')
-            assert hasattr(payload, 'description')
-            assert hasattr(payload, 'severity')
+            assert hasattr(payload, "payload")
+            assert hasattr(payload, "description")
+            assert hasattr(payload, "severity")
 
     @pytest.mark.asyncio
     @pytest.mark.slow
@@ -337,11 +327,7 @@ class TestPerformance:
         import time
 
         manager = UnifiedPayloadManager()
-        target_info = {
-            "language": "python",
-            "framework": "django",
-            "features": ["database", "auth", "api"]
-        }
+        target_info = {"language": "python", "framework": "django", "features": ["database", "auth", "api"]}
 
         start = time.time()
         selected = await manager.smart_payload_selection(target_info, max_payloads=100)

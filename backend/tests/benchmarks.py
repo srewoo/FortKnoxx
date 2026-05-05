@@ -4,17 +4,15 @@ Measures performance of all major components
 """
 
 import asyncio
-import time
 import statistics
-from typing import List, Dict, Any
-from pathlib import Path
 import tempfile
-import shutil
+import time
+from pathlib import Path
+from typing import Any
 
-from engines.unified_scanner import UnifiedSecurityScanner, UnifiedScanConfig
+from engines.payloads.strix_fuzzer import FuzzTarget, StrixFuzzer
 from engines.payloads.unified_payload_manager import UnifiedPayloadManager
-from engines.payloads.strix_fuzzer import StrixFuzzer, FuzzTarget
-from engines.zero_day.ml_detector import MLAnomalyDetector
+from engines.unified_scanner import UnifiedScanConfig, UnifiedSecurityScanner
 
 
 class BenchmarkResult:
@@ -22,14 +20,14 @@ class BenchmarkResult:
 
     def __init__(self, name: str):
         self.name = name
-        self.times: List[float] = []
-        self.metadata: Dict[str, Any] = {}
+        self.times: list[float] = []
+        self.metadata: dict[str, Any] = {}
 
     def add_time(self, duration: float):
         """Add a timing measurement"""
         self.times.append(duration)
 
-    def get_statistics(self) -> Dict[str, float]:
+    def get_statistics(self) -> dict[str, float]:
         """Calculate statistics"""
         if not self.times:
             return {}
@@ -40,7 +38,7 @@ class BenchmarkResult:
             "min": min(self.times),
             "max": max(self.times),
             "stdev": statistics.stdev(self.times) if len(self.times) > 1 else 0.0,
-            "count": len(self.times)
+            "count": len(self.times),
         }
 
     def __str__(self):
@@ -64,7 +62,7 @@ class BenchmarkSuite:
 
     def __init__(self, iterations: int = 10):
         self.iterations = iterations
-        self.results: List[BenchmarkResult] = []
+        self.results: list[BenchmarkResult] = []
 
     async def run_all_benchmarks(self):
         """Run all benchmarks"""
@@ -111,7 +109,7 @@ class BenchmarkSuite:
         target_info = {
             "language": "python",
             "framework": "fastapi",
-            "features": ["database", "auth", "api", "llm"]
+            "features": ["database", "auth", "api", "llm"],
         }
 
         for i in range(self.iterations):
@@ -148,11 +146,7 @@ class BenchmarkSuite:
         fuzzer = StrixFuzzer(max_iterations=100)
 
         # Mock target (no actual HTTP requests)
-        target = FuzzTarget(
-            url="http://localhost:8000/test",
-            method="POST",
-            param_name="data"
-        )
+        target = FuzzTarget(url="http://localhost:8000/test", method="POST", param_name="data")
 
         # Use minimal iterations for benchmark
         for i in range(3):  # Fewer iterations since fuzzing is slower
@@ -186,7 +180,7 @@ class BenchmarkSuite:
                 enable_auth_scanner=True,
                 enable_codeql=False,
                 enable_docker=False,
-                enable_iac=False
+                enable_iac=False,
             )
 
             scanner = UnifiedSecurityScanner(config)
@@ -229,7 +223,7 @@ class AccuracyBenchmark:
     def __init__(self):
         self.test_cases = self._create_test_cases()
 
-    def _create_test_cases(self) -> List[Dict[str, Any]]:
+    def _create_test_cases(self) -> list[dict[str, Any]]:
         """Create test cases with known vulnerabilities"""
         return [
             {
@@ -240,7 +234,7 @@ def get_user(username):
     return db.execute(query)
 """,
                 "expected_category": "sql_injection",
-                "severity": "critical"
+                "severity": "critical",
             },
             {
                 "name": "XSS - Reflected",
@@ -251,7 +245,7 @@ def search():
     return f"<h1>Results for: {query}</h1>"
 """,
                 "expected_category": "xss",
-                "severity": "high"
+                "severity": "high",
             },
             {
                 "name": "Command Injection",
@@ -260,7 +254,7 @@ def ping_host(host):
     os.system(f"ping -c 4 {host}")
 """,
                 "expected_category": "command_injection",
-                "severity": "critical"
+                "severity": "critical",
             },
             {
                 "name": "Path Traversal",
@@ -271,7 +265,7 @@ def download_file():
     return send_file(f"./uploads/{filename}")
 """,
                 "expected_category": "path_traversal",
-                "severity": "high"
+                "severity": "high",
             },
             {
                 "name": "Hardcoded Credentials",
@@ -280,7 +274,7 @@ DATABASE_PASSWORD = "admin123"
 API_KEY = "sk-1234567890abcdef"
 """,
                 "expected_category": "hardcoded_secrets",
-                "severity": "critical"
+                "severity": "critical",
             },
             {
                 "name": "Weak Cryptography",
@@ -289,7 +283,7 @@ import md5
 password_hash = md5.new(password.encode()).hexdigest()
 """,
                 "expected_category": "weak_crypto",
-                "severity": "high"
+                "severity": "high",
             },
             {
                 "name": "Insecure Deserialization",
@@ -298,7 +292,7 @@ import pickle
 data = pickle.loads(user_input)
 """,
                 "expected_category": "deserialization",
-                "severity": "critical"
+                "severity": "critical",
             },
             {
                 "name": "SSRF Vulnerability",
@@ -309,7 +303,7 @@ def fetch_url():
     return requests.get(url).text
 """,
                 "expected_category": "ssrf",
-                "severity": "high"
+                "severity": "high",
             },
         ]
 
@@ -324,7 +318,7 @@ def fetch_url():
 
         for test_case in self.test_cases:
             # Create temporary file with vulnerable code
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
                 f.write(test_case["code"])
                 temp_file = f.name
 
@@ -399,10 +393,7 @@ class StressTester:
         all_payloads = await manager.get_all_payloads()
 
         # Generate mutations for all
-        mutated = await manager.generate_mutated_payloads(
-            all_payloads[:100],
-            mutation_count=10
-        )
+        mutated = await manager.generate_mutated_payloads(all_payloads[:100], mutation_count=10)
 
         duration = time.time() - start
 

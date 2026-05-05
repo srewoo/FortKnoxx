@@ -1180,16 +1180,25 @@ const ScanDetail = () => {
   });
   const [selectedModel, setSelectedModel] = useState(() => {
     const storedModel = localStorage.getItem("selectedModel");
-    // Migrate old model names to new ones
+    // Mirror of backend/llm/model_registry.LEGACY_MODEL_MIGRATION.
+    // When the registry on the server is updated, both ends ship in
+    // the same release.
     const modelMigration = {
-      "gpt-4o": "gpt-4o-mini",
-      "gpt-4": "gpt-4o-mini",
-      "gpt-4-turbo": "gpt-4o-mini",
-      "claude-sonnet-4-20250514": "claude-3-7-sonnet-20250219",
-      "claude-4-sonnet-20250514": "claude-3-7-sonnet-20250219",
-      "gemini-2.0-flash-exp": "gemini-2.0-flash",
-      "gemini-1.5-pro": "gemini-2.0-flash",
-      "gemini-pro": "gemini-2.0-flash"
+      "gpt-4o": "gpt-5-mini",
+      "gpt-4o-mini": "gpt-5-mini",
+      "gpt-4-turbo": "gpt-5-mini",
+      "gpt-4": "gpt-5-mini",
+      "gpt-3.5-turbo": "gpt-5-nano",
+      "claude-3-5-sonnet-20241022": "claude-sonnet-4-6",
+      "claude-3-7-sonnet-20250219": "claude-sonnet-4-6",
+      "claude-sonnet-4-20250514": "claude-sonnet-4-6",
+      "claude-4-sonnet-20250514": "claude-sonnet-4-6",
+      "claude-3-haiku-20240307": "claude-haiku-4-5",
+      "gemini-pro": "gemini-3.1-flash",
+      "gemini-1.5-pro": "gemini-3.1-pro",
+      "gemini-1.5-flash": "gemini-3.1-flash",
+      "gemini-2.0-flash": "gemini-3.1-flash",
+      "gemini-2.0-flash-exp": "gemini-3.1-flash",
     };
 
     if (storedModel && modelMigration[storedModel]) {
@@ -1198,7 +1207,7 @@ const ScanDetail = () => {
       return newModel;
     }
 
-    return storedModel || "claude-3-7-sonnet-20250219";
+    return storedModel || "claude-sonnet-4-6";
   });
   const [filterSeverity, setFilterSeverity] = useState(() => {
     return localStorage.getItem("filterSeverity") || "all";
@@ -1220,8 +1229,27 @@ const ScanDetail = () => {
     applyFilters();
   }, [vulnerabilities, qualityIssues, complianceIssues, filterSeverity, filterOwasp, filterScanner]);
 
+  // When the provider changes, snap the model to that provider's
+  // default if the current selection belongs to a different provider —
+  // otherwise the dropdown shows a stale Claude id while OpenAI is
+  // selected and the API call 404s.
+  const PROVIDER_MODELS = {
+    openai: ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
+    anthropic: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    gemini: ["gemini-3.1-pro", "gemini-3.1-flash"],
+  };
+  const PROVIDER_DEFAULTS = {
+    openai: "gpt-5-mini",
+    anthropic: "claude-sonnet-4-6",
+    gemini: "gemini-3.1-flash",
+  };
+
   useEffect(() => {
     localStorage.setItem("selectedProvider", selectedProvider);
+    const allowed = PROVIDER_MODELS[selectedProvider] || [];
+    if (!allowed.includes(selectedModel)) {
+      setSelectedModel(PROVIDER_DEFAULTS[selectedProvider]);
+    }
   }, [selectedProvider]);
 
   useEffect(() => {
@@ -1734,23 +1762,28 @@ const ScanDetail = () => {
                         </Select>
 
                         <Select value={selectedModel} onValueChange={setSelectedModel}>
-                          <SelectTrigger className="w-48" data-testid="ai-model-select">
+                          <SelectTrigger className="w-56" data-testid="ai-model-select">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
                             {selectedProvider === "openai" && (
                               <>
-                                <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                                <SelectItem value="gpt-5">GPT-5</SelectItem>
+                                <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
+                                <SelectItem value="gpt-5-nano">GPT-5 Nano</SelectItem>
                               </>
                             )}
                             {selectedProvider === "anthropic" && (
                               <>
-                                <SelectItem value="claude-3-7-sonnet-20250219">Claude Sonnet 3.7</SelectItem>
+                                <SelectItem value="claude-opus-4-7">Claude Opus 4.7</SelectItem>
+                                <SelectItem value="claude-sonnet-4-6">Claude Sonnet 4.6</SelectItem>
+                                <SelectItem value="claude-haiku-4-5">Claude Haiku 4.5</SelectItem>
                               </>
                             )}
                             {selectedProvider === "gemini" && (
                               <>
-                                <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+                                <SelectItem value="gemini-3.1-pro">Gemini 3.1 Pro</SelectItem>
+                                <SelectItem value="gemini-3.1-flash">Gemini 3.1 Flash</SelectItem>
                               </>
                             )}
                           </SelectContent>
@@ -1865,17 +1898,18 @@ const SettingsPage = () => {
       setGitIntegrations(integrationsRes.data.integrations || []);
       setConnectedRepos(reposRes.data.repositories || []);
 
-      // Load scanner enabled/disabled state from backend scanner_settings
+      // Load scanner enabled/disabled state from backend scanner_settings.
+      // Backend stores keys as "enable_semgrep"; UI uses bare "semgrep".
+      // Strip the "enable_" prefix when reading, add it back when writing.
       const backendScannerSettings = settingsRes.data.scanner_settings || {};
 
-      // Merge backend settings with scanner list (backend settings take precedence)
       const initialConfig = {};
       Object.keys(scannersRes.data).forEach(key => {
-        // Use backend setting if available, otherwise default to true
-        if (backendScannerSettings[key] !== undefined) {
-          initialConfig[key] = backendScannerSettings[key];
+        const backendKey = `enable_${key}`;
+        if (backendScannerSettings[backendKey] !== undefined) {
+          initialConfig[key] = backendScannerSettings[backendKey];
         } else {
-          initialConfig[key] = true; // Default enabled if not set in backend
+          initialConfig[key] = true;
         }
       });
       setScannerConfig(initialConfig);
@@ -1975,9 +2009,9 @@ const SettingsPage = () => {
     }));
 
     try {
-      // Save to backend
+      // Backend expects "enable_<key>" (e.g. enable_semgrep, not semgrep)
       await axios.put(`${API}/settings/scanners`, {
-        [scannerKey]: newValue
+        [`enable_${scannerKey}`]: newValue
       });
       toast.success(`Scanner ${newValue ? 'enabled' : 'disabled'}`);
     } catch (error) {
@@ -1997,9 +2031,10 @@ const SettingsPage = () => {
     Object.keys(scanners).forEach(key => {
       if (scanners[key].installed) {
         newConfig[key] = enable;
-        updatePayload[key] = enable;
+        // Backend expects "enable_<key>" (e.g. enable_semgrep)
+        updatePayload[`enable_${key}`] = enable;
       } else {
-        newConfig[key] = scannerConfig[key] || false; // Keep non-installed scanners as-is
+        newConfig[key] = scannerConfig[key] || false;
       }
     });
 
