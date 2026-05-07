@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams } from "react-router-dom";
+import TriageDashboard from "@/components/TriageDashboard";
+import CodeReviewView from "@/components/CodeReviewView";
 import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -959,6 +961,12 @@ const RepositoryDetail = () => {
               </>
             )}
           </Button>
+          <Link to={`/repository/${repository.repo_id || repository.id}/triage`}>
+            <Button size="lg" variant="outline" data-testid="triage-btn">
+              <Activity className="mr-2 h-5 w-5" />
+              Triage
+            </Button>
+          </Link>
         </div>
       </div>
 
@@ -2819,6 +2827,8 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/add-repository" element={<AddRepository />} />
             <Route path="/repository/:repoId" element={<RepositoryDetail />} />
+            <Route path="/repository/:repoId/triage" element={<TriageDashboard />} />
+            <Route path="/repository/:repoId/file" element={<CodeReviewView />} />
             <Route path="/scan/:scanId" element={<ScanDetail />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
