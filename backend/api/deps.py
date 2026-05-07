@@ -36,6 +36,7 @@ class _AppState:
     scanner_health_report: Any | None = None
     model_manager: Any | None = None
     update_service: Any | None = None
+    llm_orchestrator: Any | None = None
     extras: dict = field(default_factory=dict)
 
 
@@ -52,6 +53,7 @@ def bind(
     scanner_health_report=None,
     model_manager=None,
     update_service=None,
+    llm_orchestrator=None,
     **extras,
 ) -> None:
     """Populate the shared state. Call once at app startup."""
@@ -71,6 +73,8 @@ def bind(
         state.model_manager = model_manager
     if update_service is not None:
         state.update_service = update_service
+    if llm_orchestrator is not None:
+        state.llm_orchestrator = llm_orchestrator
     if extras:
         state.extras.update(extras)
 
@@ -120,3 +124,7 @@ def get_scanner_health_report():
 
 def get_model_manager():
     return state.model_manager
+
+
+def get_llm_orchestrator():
+    return state.llm_orchestrator

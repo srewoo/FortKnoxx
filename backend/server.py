@@ -170,12 +170,17 @@ async def lifespan(app: FastAPI):
     # Publish singletons to api.deps for the route modules. Done after
     # the managers are wired up but before scanner health runs so any
     # extracted health route can read state during startup probes.
+    # Single shared LLM orchestrator — used by autofix, triage, and the
+    # legacy fix-recommendation route.
+    llm_orchestrator = LLMOrchestrator(db=db, settings_manager=settings_manager)
+
     api_deps.bind(
         db=db,
         client=client,
         settings_manager=settings_manager,
         git_integration_service=git_integration_service,
         encryption_service=encryption_service,
+        llm_orchestrator=llm_orchestrator,
     )
 
     # Run scanner health check at startup
@@ -277,6 +282,13 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# OpenTelemetry tracing — no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+try:
+    from utils.telemetry import init_telemetry
+    init_telemetry(app=app)
+except Exception as _otel_exc:
+    logger.debug("OTel init skipped: %s", _otel_exc)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -508,7 +520,7 @@ from services.scoring import (
     calculate_security_score,
 )
 
-async def process_scan_with_timeout(repo_id: str, scan_id: str, repo_path: str):
+async def process_scan_with_timeout(repo_id: str, scan_id: str, repo_path: str, tier: str | None = None):
     """
     Wrapper function that enforces total scan timeout.
     This prevents scans from running indefinitely.
@@ -518,7 +530,7 @@ async def process_scan_with_timeout(repo_id: str, scan_id: str, repo_path: str):
 
     try:
         await asyncio.wait_for(
-            process_scan_results(repo_id, scan_id, repo_path),
+            process_scan_results(repo_id, scan_id, repo_path, tier=tier),
             timeout=total_timeout
         )
     except asyncio.TimeoutError:
@@ -602,8 +614,13 @@ async def run_scanner_with_tracking(
         return []
 
 
-async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
-    """Process all scan results and store vulnerabilities"""
+async def process_scan_results(repo_id: str, scan_id: str, repo_path: str, tier: str | None = None):
+    """Process all scan results and store vulnerabilities.
+
+    ``tier`` ∈ {"fast", "deep", "auto", None}. When set, scanners outside
+    the tier's allowlist are turned off for this scan only — user's saved
+    enable/disable preferences are preserved otherwise.
+    """
 
     # `normalize_severity` and `map_to_owasp` are imported at module
     # level from services.normalisation — no inline shadowing needed.
@@ -661,6 +678,25 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
         logger.info("Loading scanner settings...")
         scanner_settings = await settings_manager.get_scanner_settings()
         logger.info(f"Scanner settings loaded: {scanner_settings.model_dump()}")
+
+        # Apply tier override (fast vs deep) if requested. Resolved tier is
+        # stored on the scan record so the UI can display which mode ran.
+        if tier:
+            from engines.tiers import resolve_tier, apply_tier
+            decision = resolve_tier(tier, repo_path)
+            scanner_settings = apply_tier(scanner_settings, decision.tier)
+            logger.info(
+                "Tier resolved: %s (reason=%s, diff_lines=%d, forced=%s)",
+                decision.tier, decision.reason, decision.diff_lines, decision.forced,
+            )
+            await db.scans.update_one(
+                {"id": scan_id},
+                {"$set": {
+                    "tier": decision.tier,
+                    "tier_reason": decision.reason,
+                    "tier_diff_lines": decision.diff_lines,
+                }},
+            )
 
         # Run all scanners (conditionally based on settings)
         semgrep_results = []
@@ -1074,6 +1110,31 @@ async def process_scan_results(repo_id: str, scan_id: str, repo_path: str):
             logger.info(f"False positive filtering: {original_vuln_count} → {len(vulnerabilities)} issues "
                        f"({filter_stats['reduction_percent']}% reduction)")
 
+        # Triage pipeline (cross-scanner dedup + LLM verdict cache + ignore.yml).
+        # Opt-in via FORTKNOXX_TRIAGE=1 while we ramp up; defaults to off so
+        # existing scan output stays byte-identical until we flip the switch.
+        if vulnerabilities and os.environ.get("FORTKNOXX_TRIAGE") == "1":
+            try:
+                from engines.triage import run_triage
+                pre = len(vulnerabilities)
+                vulnerabilities, triage_meta = await run_triage(
+                    vulnerabilities,
+                    repo_path=repo_path,
+                    db=db,
+                    orchestrator=globals().get("llm_orchestrator"),
+                    enable_llm=os.environ.get("FORTKNOXX_TRIAGE_LLM", "1") == "1",
+                )
+                logger.info(
+                    "Triage: %d → %d findings (cache_hits=%d, llm_calls=%d, suppressed=%d)",
+                    pre,
+                    len(vulnerabilities),
+                    triage_meta["llm_cache_hits"],
+                    triage_meta["llm_calls"],
+                    triage_meta["suppressed_count"],
+                )
+            except Exception as exc:
+                logger.exception("Triage pipeline failed, falling back to legacy filter only: %s", exc)
+
         # Perform context-aware analysis and enrichment
         enriched_vulns = None  # Track whether enrichment succeeded
         context_analysis_succeeded = False
@@ -1299,8 +1360,14 @@ from api.routes import repositories as _repository_routes
 api_router.include_router(_repository_routes.router)
 
 @api_router.post("/scans/{repo_id}")
-async def start_scan(repo_id: str, background_tasks: BackgroundTasks):
-    """Start a security scan for a repository"""
+async def start_scan(repo_id: str, background_tasks: BackgroundTasks, tier: str = "auto"):
+    """Start a security scan for a repository.
+
+    ``tier`` query param:
+      • ``fast``  — secrets + linters + Semgrep/Bandit/ESLint (~seconds).
+      • ``deep``  — full sweep including ML, DAST, runtime probes (minutes).
+      • ``auto``  — pick fast for small diffs, deep for large/release branches.
+    """
     try:
         # Get repository
         repo = await db.repositories.find_one({"id": repo_id}, {"_id": 0})
@@ -1331,9 +1398,14 @@ async def start_scan(repo_id: str, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=500, detail="Failed to clone repository")
         
         # Start background scan with timeout enforcement
-        background_tasks.add_task(process_scan_with_timeout, repo_id, scan.id, repo_path)
-        
-        return {"scan_id": scan.id, "status": "started", "message": "Scan initiated successfully"}
+        background_tasks.add_task(process_scan_with_timeout, repo_id, scan.id, repo_path, tier)
+
+        return {
+            "scan_id": scan.id,
+            "status": "started",
+            "tier": tier,
+            "message": "Scan initiated successfully",
+        }
     
     except Exception as e:
         logger.error(f"Error starting scan: {str(e)}")
@@ -1430,6 +1502,14 @@ api_router.include_router(_settings_routes.router)
 # Report generation moved to api.routes.reports (Phase 1.5).
 from api.routes import reports as _report_routes
 api_router.include_router(_report_routes.router)
+
+# Autofix: structured unified-diff fix generator with cache + git apply check.
+from api.routes import autofix as _autofix_routes
+api_router.include_router(_autofix_routes.router)
+
+# Trend dashboard, owner breakdown, top-risk list, compliance evidence pack.
+from api.routes import trends as _trend_routes
+api_router.include_router(_trend_routes.router)
 
 
 # ============================================

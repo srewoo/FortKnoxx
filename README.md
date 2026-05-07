@@ -1,81 +1,90 @@
 # FortKnoxx 🔒
 
-**Next-Generation AI-Powered Security Scanner** - The most comprehensive security platform combining traditional SAST, AI-powered zero-day detection, runtime verification, and 500+ attack payloads. Goes far beyond traditional scanners with business logic analysis, LLM security testing, and intelligent fuzzing.
+**Next-Generation AI-Powered Security Scanner** — combines traditional SAST,
+AI-powered zero-day detection, runtime verification, 500+ attack payloads,
+and a triage / autofix / benchmark stack that turns AI scanner claims into
+measurable evidence.
+
+---
+
+## ✨ What's New in v1.1
+
+Shipped on top of the v1.0 scanner platform:
+
+| Feature | What it does | Docs |
+| --- | --- | --- |
+| **Docker Compose stack** | `make up` runs mongo + redis + backend + frontend with healthchecks | [`docker-compose.yml`](docker-compose.yml) |
+| **Triage engine** | Cross-scanner dedup via fingerprint + CWE family map, LLM verdict cache, `.fortknoxx/ignore.yml` | [`docs/triage.md`](docs/triage.md) |
+| **Two-tier scan model** | `?tier=fast\|deep\|auto` — secs for PR builds, minutes for nightlies | [`docs/scan-tiers.md`](docs/scan-tiers.md) |
+| **LLM autofix** | Returns *unified diffs* validated by `git apply --check`, cached per `(fingerprint, file_hash)`, Ollama fallback | [`docs/autofix.md`](docs/autofix.md) |
+| **OWASP Benchmark harness** | `make benchmark` against OWASP Benchmark / Juliet / SecurityEval / BigVul → precision / recall / F1 | [`docs/benchmarks/`](docs/benchmarks/) |
+| **Risk + trends + owners** | EPSS-weighted risk score, `git blame` owner attribution, trend dashboard, SOC2/PCI evidence ZIP | [`docs/reporting.md`](docs/reporting.md) |
+| **CNAPP-lite + OTel** | Code↔cloud correlation via IaC resources; OpenTelemetry tracing on FastAPI + scanner / LLM spans | [`docs/cnapp-and-otel.md`](docs/cnapp-and-otel.md) |
+| **ZAP DAST overhaul** | Automation Framework YAML, real auth (form / JWT / OAuth2-cc), AJAX spider, OpenAPI auto-discovery, session reuse, triage dedup | [`docs/zap-dast.md`](docs/zap-dast.md) |
+
+**Test coverage:** 73 unit tests across triage, tiers, autofix, reporting,
+CNAPP, ZAP + 5 benchmark metrics tests = **78 green**.
+
+**Cost ceiling:** every LLM-using feature has fingerprint caching + an
+Ollama fallback. Every cloud feature uses free OSS or free APIs (FIRST
+EPSS, OTel collector). Marginal LLM cost only.
+
+---
 
 ## 🌟 Key Features
 
 ### 🤖 AI-Powered Security Scanners (Unique to FortKnoxx)
 
-#### 1. **Zero-Day Detector** (ML-Based)
+#### 1. Zero-Day Detector (ML-Based)
 - **Graph Neural Networks (GNN)** for code property graph analysis
 - **CodeBERT** transformer model for semantic understanding
 - Detects **novel vulnerabilities** that signature-based tools miss
 - Anomaly scoring with confidence levels
 
-#### 2. **Business Logic Scanner** (Runtime Testing)
+#### 2. Business Logic Scanner (Runtime Testing)
 - Detects: IDOR, workflow bypass, race conditions, price manipulation
 - **Static Flow Analysis** + **Runtime Verification**
 - 10+ business logic vulnerability patterns
 - Actual HTTP requests to verify exploitability
 
-#### 3. **LLM Security Scanner** (Adversarial Testing)
-- **ONLY security tool** with dedicated LLM security testing
-- 1,000+ adversarial payloads (prompt injection, jailbreak, data leakage)
-- Real API testing (OpenAI, Anthropic, etc.)
-- 8 attack categories: injection, jailbreak, prompt extraction, tool abuse
+#### 3. LLM Security Scanner (Adversarial Testing)
+- **ONLY** general-purpose security tool with dedicated LLM testing
+- 1 000+ adversarial payloads (prompt injection, jailbreak, data leakage)
+- Real API testing (OpenAI, Anthropic, Gemini)
+- 8 attack categories: injection, jailbreak, prompt extraction, tool abuse, …
 
-#### 4. **Auth/AuthZ Scanner** (Runtime Testing)
-- **JWT Security**: Algorithm confusion, weak secrets, signature bypass
-- **OAuth 2.0**: Redirect URI manipulation, PKCE enforcement, scope escalation
-- **Session Management**: Cookie security, fixation, hijacking
-- Actual authentication flow testing
+#### 4. Auth/AuthZ Scanner (Runtime Testing)
+- **JWT**: algorithm confusion, weak secrets, signature bypass
+- **OAuth 2.0**: redirect URI manipulation, PKCE enforcement, scope escalation
+- **Session**: cookie security, fixation, hijacking
+- Drives actual authentication flow probes
 
 ### 💥 PayloadsAllTheThings Integration
-- **500+ attack payloads** across 13 categories
-- Inspired by [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)
-- SQL injection, XSS, XXE, SSRF, command injection, path traversal, etc.
-- **Bypass techniques**: WAF evasion, encoding variants, obfuscation
-- **Smart payload selection**: AI-driven based on language/framework
+- 500+ attack payloads across 13 categories
+- WAF evasion, encoding variants, obfuscation
+- Smart payload selection driven by detected language/framework
 
 ### 🎯 Strix-Inspired Fuzzing
-- **Intelligent fuzzing** with 10 mutation strategies
-- Coverage-guided testing
-- Property-based testing
-- Anomaly detection
-- Concurrent fuzzing support
+- 10 mutation strategies, coverage-guided
+- Property-based testing, anomaly detection, concurrent fuzzing
 
-### 🔧 Specialized Scanners Integration
-
-#### **CodeQL** - Semantic Analysis
-- 1,000+ security queries
-- Supports: Python, JavaScript, Java, Go, C++, Ruby, C#
-- SARIF output format
-
-#### **Docker Security**
-- Trivy CVE scanning
-- Dockerfile linting (hadolint)
-- CIS benchmark testing
-- Container runtime security
-
-#### **Infrastructure as Code (IaC)**
-- Terraform (tfsec, checkov)
-- Kubernetes (kube-score, kubesec)
-- CloudFormation (cfn-lint, cfn_nag)
+### 🔧 Specialized Scanner Integrations
+- **CodeQL** — 1 000+ semantic queries (Python/JS/Java/Go/C++/Ruby/C#)
+- **Docker Security** — Trivy CVE, hadolint, CIS benchmarks
+- **IaC** — Terraform (tfsec, checkov), Kubernetes (kube-score, kube-bench), CloudFormation (cfn-lint, cfn_nag)
+- **OWASP ZAP DAST** — full Automation Framework with auth + SPA crawl + OpenAPI auto-discovery
 
 ### 📊 Unified Security Platform
-- **7 specialized scanners** running in parallel
-- **Consolidated reporting** with risk scoring (0-100)
-- **Compliance mapping**: OWASP Top 10, CWE, MITRE ATT&CK, PCI-DSS, HIPAA, SOC 2
-- **Executive dashboards** with trend analysis
-- **Export formats**: JSON, SARIF, PDF, CSV
+- 7 specialized scanner families running in parallel + 25+ external tool wrappers
+- Risk scoring 0–100 with EPSS, reachability, asset criticality
+- Compliance mapping: OWASP Top 10, CWE, MITRE ATT&CK, PCI-DSS, HIPAA, SOC 2
+- Trend dashboards, owner attribution, top-risk lists
+- Export formats: JSON, SARIF, PDF, CSV, evidence-pack ZIP
 
 ### 🎨 Modern Web Interface
-- Beautiful React dashboard with shadcn/ui components
-- Real-time scan progress
-- Risk score gauges with color-coded alerts
-- Detailed findings view with code snippets
-- Scan configuration modal
-- Export functionality
+- React dashboard with shadcn/ui
+- Real-time scan progress, risk gauges, code-snippet drill-down
+- Settings UI with encrypted API-key storage
 
 ---
 
@@ -83,600 +92,97 @@
 
 ### Prerequisites
 
-- **Python 3.10+** (required)
-- **MongoDB** (required)
-- **Node.js 16+** & Yarn (for frontend)
-- **Redis** (optional - for production job queue)
+- **Docker + Docker Compose** (recommended path)
+- *or* Python 3.10+ / MongoDB / Node.js 16+ / Yarn (manual path)
+- **Redis** (optional — used for the triage / autofix cache and job queue)
 
-### 1. Automated Installation
+### Option A — Docker (recommended)
 
 ```bash
-# Clone the repository
 git clone https://github.com/your-org/FortKnoxx.git
 cd FortKnoxx
 
-# Run the automated installer (installs MongoDB, Python deps, and all 30 scanners)
+# 1. Configure secrets
+cp env.sample .env
+openssl rand -hex 32                                                 # JWT_SECRET_KEY
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"   # ENCRYPTION_MASTER_KEY
+# edit .env, paste both values
+
+# 2. Bring up the full stack
+make up                       # mongo + redis + backend + frontend
+make logs                     # tail everything
+make down                     # stop
+```
+
+Then open **http://localhost:3000**. The Makefile also has `make build`,
+`make rebuild`, `make shell-backend`, `make benchmark`, `make clean`.
+
+### Option B — Local install
+
+```bash
+# install scanners + Python deps
 chmod +x install_all_scanners.sh
 ./install_all_scanners.sh
-```
 
-This script will install:
-- **MongoDB** (macOS/Linux)
-- **Python dependencies** from `backend/requirements.txt`
-- **All 30 security scanners** (Semgrep, Trivy, Nuclei, etc.)
-- **Binary tools** (gitleaks, grype, syft, etc.)
+# configure
+cp .env.sample backend/.env   # then edit it as above
 
-### 2. Configure Environment
-
-```bash
-# Copy the sample environment file
-cp .env.sample backend/.env
-
-# Generate secure keys
-cd backend
-
-# Generate JWT secret
-openssl rand -hex 32
-
-# Generate encryption key
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-# Edit .env and paste the generated keys
-nano .env
-```
-
-**Minimum Required Configuration:**
-```env
-# Database
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=fortknox_db
-
-# Security Keys (REQUIRED - use generated values above)
-JWT_SECRET_KEY=<paste-jwt-secret-here>
-ENCRYPTION_MASTER_KEY=<paste-encryption-key-here>
-
-# Optional: Redis for production
-# REDIS_URL=redis://localhost:6379
-```
-
-### 3. Start Services
-
-**Option A: Automated (Recommended)**
-
-```bash
-# One command to start all servers (MongoDB, Backend, Frontend)
-./start_servers.sh
-```
-
-This script will:
-- ✅ Check all prerequisites
-- ✅ Verify configuration (.env file)
-- ✅ Start MongoDB
-- ✅ Setup Python virtual environment
-- ✅ Install dependencies if needed
-- ✅ Start backend on port 8000
-- ✅ Start frontend on port 3000
-
-**Option B: Manual (3 Terminals)**
-
-```bash
-# Terminal 1: Start MongoDB (if not already running)
-brew services start mongodb-community  # macOS
-# OR
-sudo systemctl start mongod  # Linux
-
-# Terminal 2: Start Backend
-cd backend
-source venv/bin/activate  # or create venv: python3 -m venv venv
-pip install -r requirements.txt
-uvicorn server:app --reload --port 8000
-
-# Terminal 3: Start Frontend
-cd frontend
-yarn install
-yarn start
-```
-
-**To Stop All Servers:**
-
-```bash
-./stop_servers.sh
-```
-
-### 4. Access Application
-
-Open **http://localhost:3000** in your browser
-
----
-
-## 📦 Detailed Installation
-
-### Option A: Full Installation (Recommended)
-
-**Installs everything automatically:**
-
-```bash
-./install_all_scanners.sh
-```
-
-This installs:
-- Python tools: semgrep, bandit, checkov, pylint, flake8, etc.
-- Binary tools: gitleaks, trivy, grype, nuclei, etc.
-- Language-specific: gosec (Go), cargo-audit (Rust), spotbugs (Java)
-- Advanced: Horusec, Snyk CLI, OWASP ZAP
-
-### Option B: Manual Installation
-
-#### 1. Install Python Dependencies
-
-```bash
-cd backend
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install all dependencies
-pip install -r requirements.txt
-```
-
-#### 2. Install Core Scanners (Minimum)
-
-**macOS:**
-```bash
-# Using Homebrew
-brew install gitleaks trivy grype syft hadolint shellcheck
-pip install semgrep bandit checkov pylint flake8
-```
-
-**Linux (Ubuntu/Debian):**
-```bash
-# Install from repositories
-sudo apt-get install shellcheck
-
-# Install from binaries
-# Gitleaks
-curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz | tar -xz
-sudo mv gitleaks /usr/local/bin/
-
-# Trivy
-curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
-
-# Grype
-curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
-
-# Syft
-curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
-
-# Python tools
-pip install semgrep bandit checkov pylint flake8 radon pip-audit sqlfluff
-```
-
-#### 3. Install Optional Scanners
-
-```bash
-# Node.js tools (if you have npm)
-npm install -g eslint eslint-plugin-security snyk
-
-# Go tools (if you have Go)
-go install github.com/securego/gosec/v2/cmd/gosec@latest
-go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-
-# Rust tools (if you have Rust)
-cargo install cargo-audit
-
-# Update Nuclei templates
-nuclei -update-templates
-```
-
-### Option C: Docker Installation (Coming Soon)
-
-```bash
-docker-compose up
+# start
+./start_servers.sh            # mongo + backend (8000) + frontend (3000)
+./stop_servers.sh             # stop
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-### Environment Variables
-
-Create `backend/.env` from `.env.sample`:
+`.env` lives at the repo root for the docker stack and at `backend/.env`
+for the manual stack. Required keys:
 
 ```env
-# ============================================
-# DATABASE
-# ============================================
+# Database
 MONGO_URL=mongodb://localhost:27017
 DB_NAME=fortknox_db
-CORS_ORIGINS=*
 
-# ============================================
-# SECURITY (REQUIRED)
-# ============================================
-# Generate JWT secret: openssl rand -hex 32
-JWT_SECRET_KEY=your-generated-jwt-secret
+# Required security keys
+JWT_SECRET_KEY=<openssl rand -hex 32>
+ENCRYPTION_MASTER_KEY=<Fernet.generate_key>
 
-# Generate encryption key: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-ENCRYPTION_MASTER_KEY=your-generated-encryption-key
-
-# ============================================
-# OPTIONAL: JOB QUEUE
-# ============================================
-# For production, install Redis:
-# macOS: brew services start redis
-# Linux: sudo systemctl start redis
+# Optional job queue + triage cache
 REDIS_URL=redis://localhost:6379
 
-# ============================================
-# OPTIONAL: LLM API KEYS (BYOK Model)
-# ============================================
-# You can also set these through the Settings UI
+# Optional LLM keys (BYOK — also configurable via Settings UI)
 # OPENAI_API_KEY=sk-...
 # ANTHROPIC_API_KEY=sk-ant-...
 # GEMINI_API_KEY=AIza...
 
-# ============================================
-# OPTIONAL: SCANNER TOKENS
-# ============================================
-# GITHUB_TOKEN=ghp_...  # Improves rate limits
-# SNYK_TOKEN=...  # For Snyk authentication (200 free tests/month)
+# Scanner tokens
+# GITHUB_TOKEN=ghp_...
+# SNYK_TOKEN=...
 ```
 
-### API Keys Configuration
+### v1.1 feature flags
 
-**Option 1: Settings UI (Recommended)**
+| Variable | What it controls | Default |
+| --- | --- | --- |
+| `FORTKNOXX_TRIAGE` | Enable cross-scanner dedup + LLM triage pipeline (off during rollout) | unset |
+| `FORTKNOXX_TRIAGE_LLM` | Use LLM for verdict generation (cached forever per fingerprint) | `1` when triage is on |
+| `FORTKNOXX_AUTOFIX_LLM` | Override autofix provider; set to `ollama` for zero-cost local fixes | unset |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Enable OpenTelemetry tracing → ship spans to a collector | unset (off) |
 
-1. Start the application
-2. Navigate to **Settings** (http://localhost:3000/settings)
-3. Add your API keys:
-   - OpenAI API Key (https://platform.openai.com/api-keys)
-   - Anthropic API Key (https://console.anthropic.com/)
-   - Google Gemini Key (https://makersuite.google.com/app/apikey)
-   - GitHub Token (https://github.com/settings/tokens)
-   - Snyk Token (https://snyk.io/account)
+### API keys via Settings UI
 
-Keys are encrypted with AES-256 and stored in MongoDB.
-
-**Option 2: Environment Variables**
-
-Add keys to `backend/.env`:
-
-```env
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GEMINI_API_KEY=AIza...
-GITHUB_TOKEN=ghp_...
-SNYK_TOKEN=...
-```
+1. Start the app, navigate to **Settings** (`/settings`).
+2. Add keys for OpenAI / Anthropic / Gemini / GitHub / Snyk.
+3. All keys are AES-256 encrypted and stored in MongoDB.
 
 ---
 
 ## 🎯 Usage
 
-### 1. Add a Repository
-
-1. Click **"Add Repository"**
-2. Enter:
-   - Repository name
-   - Git URL (https://github.com/user/repo)
-   - Access token (GitHub PAT or GitLab token)
-   - Branch (default: main)
-3. Click **"Add Repository"**
-
-### 2. Run a Security Scan
-
-1. Click **"Start Scan"** on any repository
-2. Wait for scan to complete (progress shown in real-time)
-3. View results:
-   - **Security Score**: Overall security posture (0-100)
-   - **Vulnerabilities**: Critical, High, Medium, Low counts
-   - **OWASP Categories**: Mapped to OWASP Top 10
-
-### 3. View Vulnerability Details
-
-1. Click on a repository
-2. Navigate to **"Vulnerabilities"** tab
-3. View detailed findings:
-   - File path and line numbers
-   - Severity and OWASP category
-   - Code snippet
-   - CWE/CVE mappings
-   - Fix recommendations
-
-### 4. Generate AI Fixes (Optional)
-
-1. Click **"Get AI Fix"** on any vulnerability
-2. Select LLM provider (OpenAI, Anthropic, Gemini)
-3. View generated fix recommendation with:
-   - Root cause analysis
-   - Secure code example
-   - Prevention tips
-   - References (CWE, OWASP)
-
-### 5. Export Reports
-
-1. Navigate to **"Reports"** tab
-2. Select format:
-   - **JSON**: Full structured data
-   - **CSV**: Spreadsheet-compatible
-   - **PDF**: Executive summary (coming soon)
-3. Download report
-
----
-
-## 🧪 Advanced Features
-
-### Business Logic Vulnerability Scanner
-
-Detects logic flaws that traditional SAST tools miss:
-
-- **IDOR (Insecure Direct Object References)**
-- **Workflow Bypass** (checkout without payment)
-- **Race Conditions** (double-spend attacks)
-- **Price Tampering** (manipulating prices)
-- **Access Control Violations**
-- **State Machine Flaws**
-
-**Usage:** Automatically runs during scans - check for `BUSINESS_LOGIC` category in results.
-
-### LLM Security Testing
-
-Tests AI/LLM integrations with 1,000+ adversarial payloads:
-
-- **Prompt Injection** (DAN, jailbreak)
-- **Data Leakage** (extract training data)
-- **Unauthorized Actions** (function calling abuse)
-- **PII Extraction** (extract user data)
-- **Hallucination Triggers**
-
-**Usage:** Configure LLM API keys, scanner detects LLM usage automatically.
-
-### Compliance Reports
-
-Generate compliance reports for:
-
-- **SOC 2 Type II**
-- **ISO 27001**
-- **PCI-DSS**
-- **HIPAA**
-- **GDPR**
-- **OWASP Top 10**
-- **MITRE ATT&CK**
-
-**Usage:** Navigate to **Compliance** tab in scan results.
-
----
-
-## 🏗️ Architecture
+### Add a repository
 
 ```
-FortKnoxx/
-├── backend/                 # FastAPI backend
-│   ├── server.py           # Main API server
-│   ├── scanners/           # Scanner integrations (24 tools)
-│   ├── engines/            # AI security engines
-│   │   ├── logic/          # Business logic scanner
-│   │   ├── auth_scanner/   # Auth/AuthZ scanner
-│   │   ├── llm_security/   # LLM security tester
-│   │   └── zero_day/       # Zero-day detector
-│   ├── auth/               # JWT authentication & RBAC
-│   ├── secrets/            # Secrets vault & encryption
-│   ├── jobs/               # Job queue & workers
-│   ├── settings/           # Settings management
-│   ├── llm/                # LLM orchestrator
-│   └── requirements.txt    # Python dependencies
-├── frontend/               # React frontend
-│   └── src/
-│       ├── App.js          # Main application
-│       └── components/     # UI components
-├── install_all_scanners.sh # Automated installer
-├── .env.sample            # Sample environment config
-└── README.md              # This file
-```
-
----
-
-## 🛠️ Development
-
-### Backend Development
-
-```bash
-cd backend
-source venv/bin/activate
-
-# Install dev dependencies
-pip install -r requirements.txt
-
-# Run with auto-reload
-uvicorn server:app --reload --port 8000
-
-# Run tests
-pytest
-
-# Format code
-black .
-isort .
-
-# Lint
-pylint *.py
-flake8
-```
-
-### Frontend Development
-
-```bash
-cd frontend
-
-# Install dependencies
-yarn install
-
-# Start dev server
-yarn start
-
-# Build for production
-yarn build
-
-# Run tests
-yarn test
-```
-
-### Adding a New Scanner
-
-1. Create scanner file in `backend/scanners/`:
-
-```python
-class NewScanner:
-    def scan(self, repo_path: str) -> List[Vulnerability]:
-        # Implement scanner logic
-        pass
-```
-
-2. Register in `backend/server.py`:
-
-```python
-from scanners.new_scanner import NewScanner
-
-async def run_security_scan(repo_id, scan_id):
-    # Add to scanner list
-    scanners.append(NewScanner())
-```
-
-3. Update `install_all_scanners.sh`:
-
-```bash
-# Add installation command
-brew install new-scanner
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**1. MongoDB Connection Error**
-```
-Error: MongoServerError: connect ECONNREFUSED
-```
-**Solution:**
-```bash
-# macOS
-brew services start mongodb-community
-
-# Linux
-sudo systemctl start mongod
-
-# Check status
-mongosh --eval "db.adminCommand('ping')"
-```
-
-**2. Scanner Not Found**
-```
-Warning: gitleaks not found
-```
-**Solution:**
-```bash
-# Install missing scanner
-brew install gitleaks  # macOS
-# OR
-./install_all_scanners.sh  # Reinstall all
-```
-
-**3. Import Error (secrets module)**
-```
-ImportError: cannot import name 'encryption'
-```
-**Solution:**
-```bash
-# Ensure you're in the backend directory
-cd backend
-
-# Activate virtual environment
-source venv/bin/activate
-
-# Reinstall dependencies
-pip install -r requirements.txt
-```
-
-**4. Frontend Connection Timeout**
-```
-ERR_CONNECTION_TIMED_OUT on port 8000
-```
-**Solution:**
-```bash
-# Check if backend is running
-lsof -i :8000
-
-# Restart backend
-cd backend
-uvicorn server:app --reload --port 8000
-```
-
-**5. Encryption/Decryption Error**
-```
-ERROR: Failed to decrypt setting openai_api_key
-```
-**Solution:**
-```bash
-# Regenerate encryption key
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-# Update ENCRYPTION_MASTER_KEY in .env
-# Clear old settings from MongoDB
-mongosh fortknox_db --eval "db.settings.deleteMany({})"
-```
-
-### Logs
-
-**Backend logs:**
-```bash
-tail -f backend/backend.log
-```
-
-**Frontend logs:**
-```bash
-# Check browser console (F12)
-```
-
----
-
-## 📝 API Documentation
-
-### Authentication
-
-```bash
-# Register user
-POST /api/auth/register
-{
-  "email": "user@example.com",
-  "password": "secure-password",
-  "full_name": "John Doe",
-  "role": "developer"
-}
-
-# Login
-POST /api/auth/login
-{
-  "email": "user@example.com",
-  "password": "secure-password"
-}
-
-# Response
-{
-  "access_token": "eyJ...",
-  "token_type": "bearer",
-  "user": {...}
-}
-```
-
-### Repositories
-
-```bash
-# List repositories
-GET /api/repositories
-
-# Add repository
 POST /api/repositories
 {
   "name": "my-app",
@@ -684,226 +190,499 @@ POST /api/repositories
   "access_token": "ghp_...",
   "branch": "main"
 }
+```
 
-# Start scan
-POST /api/scans/{repo_id}
+### Run a scan
+
+```
+POST /api/scans/{repo_id}?tier=auto      # default
+POST /api/scans/{repo_id}?tier=fast      # secs — Semgrep + Bandit + secrets + linters
+POST /api/scans/{repo_id}?tier=deep      # full sweep including ML, DAST, LLM
+```
+
+`tier=auto` chooses fast / deep based on `git diff --shortstat HEAD~1` size
+(threshold 500 lines). User-disabled scanners stay disabled.
+
+### Inspect findings
+
+```
+GET  /api/scans/{repo_id}                      # list scans
+GET  /api/findings?repo_id={id}                # per-repo findings
+GET  /api/trends/findings?repo_id={id}&days=30 # introduced-per-day series
+GET  /api/trends/top-risk?repo_id={id}&limit=20
+GET  /api/trends/owners?repo_id={id}
+```
+
+### Generate a fix (unified diff, cached)
+
+```
+POST /api/autofix
+{
+  "vulnerability_id": "<finding id>",
+  "repo_path": "/tmp/fortknoxx_repos/<repo_id>",
+  "provider": "anthropic"
+}
+```
+
+Returns `{ diff, applies_cleanly, cached, … }`. The UI surfaces an
+"Apply fix" button only when `applies_cleanly: true`. Set
+`FORTKNOXX_AUTOFIX_LLM=ollama` to run fully on a local model.
+
+### Export evidence pack (SOC2 / PCI auditors)
+
+```
+GET /api/reports/evidence-pack?repo_id={id}&scan_id={id}
+```
+
+Streams a ZIP with `manifest.json`, `findings.json`, `summary.md`, and
+`scanner_health.json` mapped to SOC2 CC7.1/CC7.2 + PCI 6.5/11.3.
+
+Full Swagger UI: **http://localhost:8000/docs**
+
+---
+
+## 🪜 Tiered Scans
+
+`backend/engines/tiers.py` classifies every scanner into one of three sets:
+
+| Set | Scanners | Tier policy |
+| --- | --- | --- |
+| `FAST_SCANNERS` | Semgrep, Bandit, ESLint, Gitleaks, TruffleHog, ShellCheck, Hadolint, Pylint, Flake8, SQLFluff | runs in fast and deep |
+| `DEEP_ONLY_SCANNERS` | Zero-day GNN, Business Logic, LLM, Auth, CodeQL, ZAP DAST, API Fuzzer, Schemathesis, Garak, Promptfoo, Nuclei, Prowler, kube-bench, kube-hunter, SpotBugs, Pyre, Horusec, Snyk | deep only |
+| `ALWAYS_ON` | Grype, Trivy, Checkov, OSV, license, CycloneDX | both tiers |
+
+The tier is layered on top of the user's saved settings — if you've
+disabled `gosec`, it stays disabled, regardless of tier.
+
+---
+
+## 🧹 Triage Engine
+
+After every scan FortKnoxx can run `engines.triage.run_triage()` (opt-in
+via `FORTKNOXX_TRIAGE=1`):
+
+1. **Fingerprint** — stable 16-char hash that survives whitespace edits,
+   line drift up to ±5 lines, and CWE-family aliases (Bandit's `CWE-89`
+   == Semgrep's `CWE-564` for SQLi). URLs are normalised — `/api/users/123`,
+   `http://app/api/users/9999`, and `/api/users/{id}` all collapse so ZAP
+   / Nuclei / Schemathesis findings on the same endpoint dedupe.
+2. **Dedup** — worst-severity wins, sources merged, confidence boosted.
+3. **Ignore rules** — `.fortknoxx/ignore.yml` per-repo with optional
+   `expires_at` so suppressions don't rot.
+4. **LLM triage** — one call per fingerprint, cached forever in
+   `triage_cache`. Re-scans of the same repo cost $0.
+
+---
+
+## 🛠️ LLM Autofix
+
+`POST /api/autofix` returns a *verified unified diff*, not free-form
+prose. The flow:
+
+```
+finding ─▶ fingerprint+file_hash cache lookup
+       ─▶ LLM call (temperature 0, deterministic prompt)
+       ─▶ git apply --check against the cloned repo
+       ─▶ persist on success only (no poison cache)
+       ─▶ return { diff, applies_cleanly, cached, provider, model }
+```
+
+`FORTKNOXX_AUTOFIX_LLM=ollama` routes every call to a local model. The
+fingerprint cache means even paid-LLM mode amortises to nearly zero
+cost across re-scans.
+
+---
+
+## 📈 Risk-Based Reporting
+
+```
+risk = severity × reachability × (0.5 + 0.5·EPSS) × asset_criticality
+```
+
+* **EPSS** — pulled from FIRST.org's free API, cached 24h per CVE.
+* **Reachability** — set by the existing reachability heuristic (or
+  `unknown` → 0.4 weight).
+* **Asset criticality** — repo tag in `{critical, high, medium, low}`.
+
+Output normalised to 0–100. The dashboard sorts findings by `risk_score`
+directly.
+
+`services/blame.py` shells out to `git blame --porcelain` to add
+`owner_email` / `owner_name` / `last_modified_unix` to every finding —
+no SSO/Slack integration required.
+
+---
+
+## 🧪 Benchmark Harness
+
+```bash
+make benchmark                                   # all datasets, default scanners
+make benchmark DATASETS=owasp_benchmark          # one dataset
+make benchmark SCANNERS=semgrep,bandit,gosec     # scanner subset
+```
+
+Datasets:
+
+| Dataset | Language | Cases | Use |
+| --- | --- | --- | --- |
+| OWASP Benchmark v1.2 | Java | ~3 000 | SAST primary |
+| Juliet (NIST) | Java/C/C++ | ~64 000 | Cross-language |
+| SecurityEval | Python | ~130 | LLM-vuln targeted |
+| BigVul | C/C++ | ~3 700 real CVEs | Real-world |
+
+Outputs land under `benchmarks/results/<timestamp>/` with `raw.json`
++ `summary.md` per dataset. `docs/benchmarks/latest.md` is overwritten
+on every run so the docs always show current numbers.
+
+---
+
+## 🔭 Observability (OpenTelemetry)
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 make up
+```
+
+Auto-instruments every FastAPI request. Use the convenience context
+managers from `utils.telemetry` for explicit spans:
+
+```python
+from utils.telemetry import scanner_span, llm_span, span
+
+async with scanner_span("semgrep", repo_id=rid):
+    await run_semgrep(...)
+
+with llm_span("anthropic", model="claude-opus-4-7", kind="autofix"):
+    diff = await orchestrator.generate_completion(...)
+```
+
+Point the collector at Tempo / Jaeger for traces, or tee to Prometheus
+for metrics. No second instrumentation layer required.
+
+---
+
+## 🏗️ Architecture
+
+```
+FortKnoxx/
+├── backend/
+│   ├── server.py                       # FastAPI app + scan orchestration
+│   ├── api/
+│   │   ├── deps.py                     # DI container
+│   │   ├── routes/
+│   │   │   ├── scans.py
+│   │   │   ├── findings.py
+│   │   │   ├── repositories.py
+│   │   │   ├── settings.py
+│   │   │   ├── reports.py
+│   │   │   ├── autofix.py              # v1.1
+│   │   │   ├── trends.py               # v1.1 (trends + evidence pack)
+│   │   │   └── health.py
+│   │   └── schemas/
+│   ├── engines/
+│   │   ├── triage/                     # v1.1 (dedup + LLM verdict cache + ignore.yml)
+│   │   ├── cnapp/                      # v1.1 (code↔cloud correlation)
+│   │   ├── tiers.py                    # v1.1 (fast / deep)
+│   │   ├── auth_scanner/               # JWT / OAuth2 / session
+│   │   ├── logic/                      # business-logic flaws
+│   │   ├── llm_security/               # adversarial LLM testing
+│   │   ├── zero_day/                   # GNN + CodeBERT
+│   │   ├── payloads/                   # 500+ attack payloads
+│   │   └── specialized/                # external scanner adapters
+│   ├── scanners/
+│   │   ├── zap/                        # v1.1 (config + AF YAML + OpenAPI discovery)
+│   │   └── (24 other scanner wrappers)
+│   ├── services/
+│   │   ├── autofix.py                  # v1.1 (unified-diff fixes, cached)
+│   │   ├── risk_score.py               # v1.1 (severity × reach × EPSS × asset)
+│   │   ├── blame.py                    # v1.1 (git-blame owner attribution)
+│   │   └── (existing services)
+│   ├── llm/                            # provider orchestrator + model registry
+│   ├── utils/
+│   │   └── telemetry.py                # v1.1 (OTel)
+│   ├── settings/
+│   ├── auth/
+│   ├── jobs/
+│   ├── reporting/                      # PDF / executive / compliance
+│   └── tests/                          # 73 unit tests
+├── frontend/
+│   ├── Dockerfile                      # v1.1
+│   ├── nginx.conf                      # v1.1
+│   └── src/
+├── benchmarks/                         # v1.1
+│   ├── harness/                        # runner + adapters + metrics
+│   ├── datasets/                       # gitignored, populated by fetch.sh
+│   └── results/                        # gitignored
+├── docs/
+│   ├── triage.md                       # v1.1
+│   ├── scan-tiers.md                   # v1.1
+│   ├── autofix.md                      # v1.1
+│   ├── reporting.md                    # v1.1
+│   ├── cnapp-and-otel.md               # v1.1
+│   ├── zap-dast.md                     # v1.1
+│   └── benchmarks/                     # latest.md auto-generated
+├── docker-compose.yml                  # v1.1
+├── Makefile                            # v1.1
+├── install_all_scanners.sh
+├── start_servers.sh / stop_servers.sh
+├── env.sample
+└── README.md
+```
+
+---
+
+## 🛠️ Development
+
+### Backend
+
+```bash
+cd backend
+source venv/bin/activate
+
+uvicorn server:app --reload --port 8000
+
+# Tests
+venv/bin/python -m pytest tests/ -q
+venv/bin/python -m pytest tests/test_triage.py tests/test_zap.py -q
+
+# Lint + format
+ruff check .
+ruff format .
+```
+
+### Frontend
+
+```bash
+cd frontend
+yarn install
+yarn start                  # dev
+yarn build                  # production
+yarn test
+```
+
+### Adding a new scanner
+
+1. Add `backend/scanners/<name>_scanner.py` with an async `scan(repo_path)` returning a list of findings.
+2. Register the toggle in `backend/settings/models.py` (`enable_<name>: bool`).
+3. Classify it in `backend/engines/tiers.py` — exactly one of
+   `FAST_SCANNERS`, `DEEP_ONLY_SCANNERS`, or `ALWAYS_ON`.
+4. Wire it into `process_scan_results` in `server.py`.
+5. Add a row to `install_all_scanners.sh` if it has a CLI dependency.
+
+---
+
+## 🐛 Troubleshooting
+
+### MongoDB connection error
+
+```bash
+# macOS
+brew services start mongodb-community
+# Linux
+sudo systemctl start mongod
+mongosh --eval "db.adminCommand('ping')"
+```
+
+### Scanner not found warnings
+
+```bash
+./install_all_scanners.sh
+```
+
+### Frontend can't reach backend
+
+```bash
+lsof -i :8000
+docker compose ps          # if using the compose stack
+```
+
+### Encryption error after key rotation
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# update ENCRYPTION_MASTER_KEY in .env
+mongosh fortknox_db --eval "db.settings.deleteMany({})"
+```
+
+### Logs
+
+```bash
+tail -f backend/backend.log
+docker compose logs -f backend
+```
+
+---
+
+## 📝 API Reference
+
+### Auth
+
+```
+POST /api/auth/register          # register user
+POST /api/auth/login             # → { access_token, token_type, user }
+```
+
+### Repositories + scans
+
+```
+GET    /api/repositories
+POST   /api/repositories         # add repo
+POST   /api/scans/{repo_id}      # ?tier=fast|deep|auto
+GET    /api/scans/{repo_id}      # list scans
+GET    /api/scans/detail/{scan_id}
+DELETE /api/scans/{scan_id}
+```
+
+### Findings + reporting
+
+```
+GET  /api/findings?repo_id=…
+POST /api/reports/generate                              # legacy JSON/CSV/PDF
+GET  /api/reports/evidence-pack?repo_id=…&scan_id=…     # v1.1 SOC2/PCI ZIP
+GET  /api/trends/findings?repo_id=…&days=30             # v1.1
+GET  /api/trends/top-risk?repo_id=…&limit=20            # v1.1
+GET  /api/trends/owners?repo_id=…                       # v1.1
+```
+
+### Autofix
+
+```
+POST /api/autofix                                       # v1.1
+{ "vulnerability_id": "…", "repo_path": "/tmp/fortknoxx_repos/<id>" }
 ```
 
 ### Settings
 
-```bash
-# Get settings status
-GET /api/settings
-
-# Update API keys
+```
+GET  /api/settings
 POST /api/settings/api-keys
-{
-  "openai_api_key": "sk-...",
-  "github_token": "ghp_..."
-}
+GET  /api/settings/scanners        # installed binaries
+GET  /api/settings/scanners/config
+PUT  /api/settings/scanners/config
 ```
 
-Full API documentation: **http://localhost:8000/docs** (Swagger UI)
+Full Swagger UI: **http://localhost:8000/docs**
 
 ---
 
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Ways to Contribute
-
-1. **Add New Scanners**: Integrate additional security tools
-2. **Improve AI Engines**: Enhance detection algorithms
-3. **Bug Fixes**: Report and fix issues
-4. **Documentation**: Improve setup guides and tutorials
-5. **Testing**: Add unit and integration tests
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## 🙏 Acknowledgments
-
-- All open-source scanner projects (Semgrep, Trivy, Nuclei, etc.)
-- OWASP Foundation for security standards
-- Anthropic, OpenAI, Google for LLM APIs
-
----
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/your-org/FortKnoxx/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/FortKnoxx/discussions)
-- **Email**: security@fortknox.example.com
-
----
-
-## 🗺️ Roadmap
-
-### Current (v1.0)
-- ✅ 30 integrated scanners
-- ✅ AI-powered analysis
-- ✅ JWT authentication & RBAC
-- ✅ Secrets vault
-- ✅ Settings UI for API keys
-
-### Upcoming (v1.1)
-- ⏳ GitHub Actions integration
-- ⏳ Slack/Discord notifications
-- ⏳ Custom rule engine
-- ⏳ Multi-repo dashboards
-- ⏳ Incremental scanning
-
-### Future (v2.0)
-- 📅 SSO integration (SAML, OAuth)
-- 📅 On-premise deployment
-- 📅 Active learning from user feedback
-- 📅 Automated remediation suggestions
-- 📅 Visual threat modeling
-
----
-
-## 📚 Documentation
-
-- **[QUICKSTART.md](QUICKSTART.md)** - Get started in 5 minutes
-- **[ENHANCEMENTS.md](ENHANCEMENTS.md)** - Detailed feature documentation
-- **API Documentation** - Available at http://localhost:8000/docs when running
-
----
-
-## 🎯 What Makes FortKnoxx Different?
+## 🤖 What Makes FortKnoxx Different?
 
 ### vs Traditional SAST Tools
 
 | Feature | FortKnoxx | Traditional SAST |
-|---------|-----------|------------------|
-| **Zero-day detection** | ✅ GNN + CodeBERT ML | ❌ Signature-based only |
-| **Business logic bugs** | ✅ Runtime testing | ❌ Limited or none |
-| **LLM security** | ✅ Dedicated scanner | ❌ Not supported |
-| **Runtime verification** | ✅ Actual HTTP requests | ❌ Static analysis only |
-| **Attack payloads** | ✅ 500+ with mutations | ❌ Limited payloads |
-| **Intelligent fuzzing** | ✅ Coverage-guided | ❌ Basic or none |
-| **Unified platform** | ✅ 7 scanners in one | ❌ Single scanner |
+| --- | --- | --- |
+| Zero-day detection | ✅ GNN + CodeBERT | ❌ Signature-only |
+| Business logic bugs | ✅ Runtime testing | ❌ Limited |
+| LLM security | ✅ Dedicated scanner | ❌ Not supported |
+| Runtime verification | ✅ Real HTTP probes | ❌ Static only |
+| Attack payloads | ✅ 500+ with mutations | ❌ Limited |
+| Coverage-guided fuzzing | ✅ 10 strategies | ❌ Basic / none |
+| Cross-scanner dedup | ✅ CWE-family fingerprint | ❌ None |
+| Triage cache | ✅ One LLM call per fingerprint, ever | ❌ N/A |
+| Verified autofix diffs | ✅ `git apply --check` gated | ⚠ Markdown advice |
+| Published benchmark numbers | ✅ OWASP/Juliet/SecurityEval/BigVul | ⚠ Vendor-self-reported |
+| Free / OSS | ✅ LLM cost only | ❌ Per-seat pricing |
 
-### Key Differentiators
+### vs Wiz / Prisma Cloud / Aqua (CNAPP)
 
-1. **🤖 AI-Powered Detection**
-   - Graph Neural Networks for code understanding
-   - CodeBERT transformer model
-   - Finds novel vulnerabilities traditional tools miss
-
-2. **✅ Runtime Verification**
-   - Actually tests exploitability with real HTTP requests
-   - Eliminates false positives
-   - Validates business logic flaws
-
-3. **🧠 LLM Security**
-   - **Only tool** with dedicated LLM security testing
-   - 1,000+ adversarial payloads
-   - Real API testing against OpenAI, Anthropic, etc.
-
-4. **💥 Comprehensive Payload Library**
-   - 500+ attack payloads from PayloadsAllTheThings
-   - Smart selection based on language/framework
-   - Automatic mutation for bypass testing
-
-5. **📊 Unified Platform**
-   - 7 specialized scanners in parallel
-   - Single consolidated report
-   - One risk score across all findings
-
----
-
-## 🔬 Technical Details
-
-### Scanner Technologies
-
-- **ML Models:** Graph Convolutional Networks (GCN), CodeBERT transformers
-- **Static Analysis:** AST, CFG, DFG analysis with code property graphs
-- **Runtime Testing:** Async HTTP fuzzing with mutation strategies
-- **Fuzzing:** Coverage-guided with 10 mutation strategies
-- **Pattern Matching:** 1,000+ CodeQL queries
-- **Container Security:** Trivy CVE database, CIS benchmarks
-- **IaC Security:** tfsec, checkov, kube-score integrations
-
-### Performance
-
-- **Parallel Execution:** All scanners run concurrently
-- **Typical Scan Time:** 3-6 minutes for medium repos
-- **Throughput:** 500+ payloads/second for fuzzing
-- **Scalability:** Async processing with background tasks
+* FortKnoxx isn't a full CNAPP. CNAPP-lite gives you code↔cloud
+  correlation and SBOM watch on top of free OSS scanners — most of the
+  user-visible Wiz pitch, none of the agent-mesh complexity.
+* Best fit when you want one tool that covers SAST + DAST + SCA + IaC
+  + container + LLM + cloud-finding-correlation, and you're willing
+  to host it yourself.
 
 ---
 
 ## 💡 Use Cases
 
-### 1. **Pre-Commit Security**
-Run quick scans before committing code to catch vulnerabilities early.
-
-### 2. **CI/CD Pipeline**
-Integrate into GitHub Actions, GitLab CI for automated security gates.
-
-### 3. **Penetration Testing**
-Use runtime verification and fuzzing to find exploitable vulnerabilities.
-
-### 4. **Compliance Audits**
-Generate compliance reports mapped to PCI-DSS, HIPAA, SOC 2, ISO 27001.
-
-### 5. **AI/LLM Applications**
-Dedicated scanner for prompt injection, jailbreaks, data leaks in LLM apps.
-
-### 6. **Zero-Day Research**
-ML-based anomaly detection for finding novel vulnerability patterns.
-
----
-
-## 📊 Success Metrics
-
-**From Real Scans:**
-- **1,247** vulnerabilities detected across test repos
-- **93%** detection accuracy on known CVEs
-- **127** business logic flaws found (missed by traditional tools)
-- **34** LLM security issues in AI applications
-- **89%** reduction in false positives with runtime verification
+1. **Pre-commit / PR security** — `tier=fast` runs in seconds.
+2. **CI/CD** — autofix branch suggestions per finding.
+3. **Pentesting** — runtime verification + 500-payload library.
+4. **Compliance audits** — `evidence-pack` ZIP for SOC2/PCI.
+5. **AI/LLM apps** — dedicated prompt-injection / jailbreak scanner.
+6. **Zero-day research** — GNN + CodeBERT anomaly detection.
+7. **Vendor evaluation** — `make benchmark` produces numbers you can compare.
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! See areas where you can help:
+We welcome contributions! Areas with the highest leverage right now:
 
-1. **Add new scanners** - Integrate additional security tools
-2. **ML model improvements** - Enhance zero-day detection accuracy
-3. **Payload library** - Add more attack payloads
-4. **Documentation** - Improve guides and examples
-5. **Bug fixes** - Check GitHub issues
+1. **Scanner adapters** — anything missing from
+   [`backend/scanners/`](backend/scanners). Classify it in `engines/tiers.py`.
+2. **CWE family map** — extend
+   [`backend/engines/triage/cwe_map.py`](backend/engines/triage/cwe_map.py)
+   when scanners surface unmapped CWE IDs.
+3. **Benchmark adapters** — new datasets in
+   [`benchmarks/harness/ground_truth.py`](benchmarks/harness/ground_truth.py).
+4. **AJAX spider tunables** — better SPA detection, framework-specific defaults.
+
+See `docs/` for module-level guides before opening an MR.
+
+---
+
+## 📚 Documentation
+
+- [`docs/triage.md`](docs/triage.md) — fingerprinting, dedup, LLM verdict cache, ignore rules
+- [`docs/scan-tiers.md`](docs/scan-tiers.md) — fast vs deep allowlists, auto-resolution
+- [`docs/autofix.md`](docs/autofix.md) — unified-diff generation + cache + Ollama mode
+- [`docs/reporting.md`](docs/reporting.md) — risk score, blame attribution, evidence pack
+- [`docs/cnapp-and-otel.md`](docs/cnapp-and-otel.md) — code↔cloud correlation + tracing
+- [`docs/zap-dast.md`](docs/zap-dast.md) — ZAP AF YAML, auth, AJAX spider, OpenAPI discovery
+- [`docs/benchmarks/`](docs/benchmarks) — published precision/recall/F1 per scanner
+- **API Reference** — http://localhost:8000/docs (Swagger)
+
+---
+
+## 🗺️ Roadmap
+
+### v1.1 (current)
+- ✅ Docker Compose stack
+- ✅ Triage engine with cross-scanner dedup + LLM verdict cache
+- ✅ Two-tier (fast / deep / auto) scans
+- ✅ LLM autofix returning verified unified diffs
+- ✅ OWASP Benchmark / Juliet / SecurityEval / BigVul harness
+- ✅ Risk + trends + owner attribution + evidence pack
+- ✅ CNAPP-lite (code↔cloud correlation) + OpenTelemetry
+- ✅ ZAP DAST overhaul (AF YAML, real auth, AJAX spider, OpenAPI auto-discovery)
+
+### Upcoming v1.2
+- ⏳ GitHub / GitLab Action with diff-aware PR comments
+- ⏳ VS Code extension via the existing MCP server
+- ⏳ SBOM watch loop (nightly diff vs Grype CVE feed)
+- ⏳ Service split — api-gateway / scan-orchestrator / report-service over Redis Streams
+- ⏳ Custom Semgrep rule pack maintained in-repo
+- ⏳ Reachability filter for SCA findings
+
+### Future v2.0
+- 📅 SSO (SAML, OIDC)
+- 📅 Active learning loop from user TP/FP feedback
+- 📅 Visual threat modeling
+- 📅 On-prem hardened deployment
 
 ---
 
 ## 📄 License
 
-MIT License - See [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
 ## 🙏 Acknowledgments
 
-This project builds upon and integrates many excellent open-source tools:
-
-- **PayloadsAllTheThings** - Comprehensive attack payload collection
-- **Strix** - Intelligent fuzzing framework inspiration
-- **CodeQL** - Semantic code analysis by GitHub
-- **Trivy** - Container vulnerability scanning by Aqua Security
-- **Semgrep** - Fast SAST pattern matching
-- And many more amazing open-source security tools!
+- **OWASP** — Benchmark, Top 10, ZAP
+- **PayloadsAllTheThings** — attack payload library
+- **Strix** — fuzzing framework inspiration
+- **CodeQL** (GitHub), **Semgrep** (r2c), **Trivy** (Aqua), **Grype** (Anchore), **Nuclei** (ProjectDiscovery), **Gitleaks**, **TruffleHog**, **gosec**, **Bandit**, **Pyre**, **SpotBugs**, **Horusec**, **Snyk**, **Checkov**, **kube-bench**, **kube-hunter**, **Prowler**
+- **NIST** — Juliet test suite
+- **Lab Datasets** — SecurityEval (s2e-lab), BigVul
+- **FIRST.org** — EPSS API
+- **OpenTelemetry**, **Anthropic / OpenAI / Google** — LLM APIs
+- And every other open-source security tool we wrap
 
 ---
 
-**Built with ❤️ for the security community**
+**Built with ❤️ for the security community.**
 
 ⭐ Star us on GitHub if FortKnoxx helps secure your code!

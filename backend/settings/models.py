@@ -229,6 +229,18 @@ class ScannerSettings(BaseModel):
     enable_zap_dast: bool = Field(default=False, description="OWASP ZAP DAST - Dynamic scanning (requires Docker)")
     enable_api_fuzzer: bool = Field(default=True, description="API Fuzzer - Dedicated API security testing")
 
+    # ZAP DAST tunables (UI-editable). All optional — defaults match the
+    # SpiderConfig dataclass over in scanners/zap/config.py.
+    zap_spider_max_depth: int = Field(default=5, description="ZAP spider max link depth")
+    zap_spider_max_duration_minutes: int = Field(default=5, description="ZAP spider time cap (minutes)")
+    zap_spider_threads: int = Field(default=2, description="ZAP spider thread count")
+    zap_spider_scope_includes: list[str] = Field(default_factory=list, description="Regex allowlist of URLs to crawl")
+    zap_spider_scope_excludes: list[str] = Field(default_factory=list, description="Regex denylist of URLs to skip")
+    zap_enable_ajax_spider: bool = Field(default=False, description="Force AJAX spider on (auto-detected for SPAs)")
+    zap_ajax_max_duration_minutes: int = Field(default=5, description="AJAX spider time cap (minutes)")
+    zap_openapi_auto_discover: bool = Field(default=True, description="Probe /openapi.json /swagger.json /api-docs on the target")
+    zap_session_dir: str | None = Field(default=None, description="Persist session here to reuse spider results across runs")
+
     # AI-Powered Scanners
     enable_zero_day_detector: bool = Field(default=True, description="ML-based zero-day detection")
     enable_business_logic_scanner: bool = Field(default=True, description="Business logic flaw detection")
